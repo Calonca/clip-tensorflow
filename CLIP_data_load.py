@@ -1,9 +1,11 @@
-import numpy as np
-import tensorflow as tf
 import os
+
 import cv2
-from tqdm import tqdm
+import numpy as np
 import pandas as pd
+import tensorflow as tf
+from tqdm import tqdm
+
 
 class ClipBaseGenerator(tf.keras.utils.Sequence):
   """
@@ -41,6 +43,7 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
     # Return the length of the dataset (number of batches)
     # that is given by #images // batch_size
     return len(self.data) // self.batch_size
+
 
   def on_epoch_end(self):
     # Shuffle indices after each epoch
@@ -144,30 +147,24 @@ class ClipUniqueSampleGenerator(ClipBaseGenerator):
     return (batch_images, batch_ids, batch_masks)
 ##############################################################################################################
 
+
+
 # Utils
 def construct_encoding(x, tokenizer,max_len,return_tensors=None):
     return dict(tokenizer(x, max_length=max_len, truncation=True, padding="max_length",return_tensors=return_tensors))
 
-def paths_captions_emb_list(df, all_images_path, tokenizer,max_len):
-    imagesAndLabels = []
-    df['caption'] = df['caption'].apply(lambda x:str(x))
-    df['ID'] = df['ID'].apply(lambda x:str(x))
-    for index, row in tqdm(df.iterrows(),total=df.shape[0]):
-        pair = {
-              'path' : all_images_path + row.ID,
-              'caption' : row.caption,
-              'encoding': construct_encoding(row.caption,tokenizer,max_len)
-          }
+# Removing rare words and stopwords
+def construct_encoding_1(x, tokenizer,max_len,return_tensors=None):
+    return dict(tokenizer(x, max_length=max_len, truncation=True, padding="max_length",return_tensors=return_tensors))
 
-        imagesAndLabels.append(pair)
 
-    return imagesAndLabels
 
 def dup(caption, concepts: set):
   # add caption to concepts set
   concepts.add(caption)
   return concepts
 
+# create new samples, one for each concept and caption to a different sample
 def concepts_to_captions_dup(df):
   df = df.copy()
   #copy concepts row to old concepts row
@@ -183,6 +180,7 @@ def app(caption, concepts: set):
   concepts = ', '.join(concepts)
   return concepts+caption
 
+#Adding concepts at the start of captions separated by commas
 def concepts_to_captions_append(df):
   df = df.copy()
   #copy concepts row to old concepts row
@@ -193,7 +191,8 @@ def concepts_to_captions_append(df):
   df = df.explode('caption')
   return df
 
-def paths_captions_e_list_concatenated(df, all_images_path, tokenizer,max_len):
+# Preprocessing function that creates images and labels pairs
+def paths_captions_emb_list(df, all_images_path, tokenizer,max_len):
     imagesAndLabels = []
     df['caption'] = df['caption'].apply(lambda x:str(x))
     df['ID'] = df['ID'].apply(lambda x:str(x))
@@ -207,4 +206,3 @@ def paths_captions_e_list_concatenated(df, all_images_path, tokenizer,max_len):
         imagesAndLabels.append(pair)
 
     return imagesAndLabels
-

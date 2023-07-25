@@ -32,6 +32,52 @@ def len_duplicate_caption(df):
     print(f'len df caption: {len(df.caption)}')
     print(f'len df caption unique: {len(df.caption.unique())}')
 
+def to_lowercase(set_concepts):
+    return {c.lower() for c in set_concepts}
+
+def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = None):
+    df1 = df.copy()
+    df2 = df.copy()
+
+
+    # df.concepts = df.concepts.apply(to_lowercase)
+    # make a list of the most common concepts to use as labels
+    concepts_l = df.concepts.to_list()
+    concepts = [item for sublist in concepts_l for item in sublist]
+
+
+
+
+    concepts_freq = Counter(concepts)
+
+    if concepts_to_exclude:
+        for concept_to_exclude in concepts_to_exclude:
+            if concept_to_exclude in concepts_freq:
+                del concepts_freq[concept_to_exclude]
+
+    concepts_freq = concepts_freq.most_common(num_classes)
+
+    #for ech concept add most common concept to list and remove from df until all row are covered
+    concepts_covering_all_dataset = []
+    df_len_before_removing = len(df)
+
+    for concept in concepts_freq:
+
+        df1 = df1[~df1['concepts'].apply(lambda x: concept[0] in x)]#remove rows containing concept
+
+        concepts_covering_all_dataset.append((concept[0],concept[1],df_len_before_removing-len(df)))
+        df_len_before_removing = len(df)
+        if len(df) == 0:
+            break
+
+    
+
+
+    return concepts_covering_all_dataset, df
+
+
+
+
 def print_metric(df,num_classes):
     # make a list of the most common concepts to use as labels
     concepts_l = df.concepts.to_list()
