@@ -3,3 +3,4 @@ dataset/resized_train.zip
 dataset/resized_train/
 wandb/
 weights/
+artifacts/

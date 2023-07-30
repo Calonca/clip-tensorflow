@@ -1,9 +1,12 @@
 import os
 
 import cv2
+import nltk
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 from tqdm import tqdm
 
 
@@ -97,7 +100,7 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
     return (batch_images, batch_ids, batch_masks)
   
 ##############################################################################################################
-# This generator select between a random image and text for each sample
+# This generator select between a random image and text for each sample, Work In Progress
 class ClipUniqueSampleGenerator(ClipBaseGenerator):
   
   def get_image_and_label(self, index):
@@ -189,6 +192,31 @@ def concepts_to_captions_append(df):
   df['caption'] = df[['caption', 'concepts']].apply(lambda x: app(*x), axis=1)
   # explode concepts set row
   df = df.explode('caption')
+  return df
+
+def remove_stopwords(caption):
+  stop_words = set(stopwords.words('english'))
+  word_tokens = word_tokenize(caption)
+  # converts the words in word_tokens to lower case and then checks whether
+  #they are present in stop_words or not
+  filtered_sentence = [w for w in word_tokens if not w.lower() in stop_words]
+  #with no lower case conversion
+  filtered_sentence = []
+  for w in word_tokens:
+      if w not in stop_words:
+          filtered_sentence.append(w)
+  return ' '.join(filtered_sentence)
+
+#Removes stopwords and rare words
+def concepts_to_captions_remove_stopwords(df):
+  df = df.copy()
+  #copy concepts row to old concepts row
+  df['caption_old'] = df['caption']
+  nltk.download('stopwords')
+  nltk.download('punkt')
+  
+  # append caption row to concepts set row
+  df['caption'] = df['caption'].apply(lambda x: remove_stopwords(x))
   return df
 
 # Preprocessing function that creates images and labels pairs
