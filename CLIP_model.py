@@ -60,7 +60,8 @@ def get_clip_model(
     latent_dim_imgs,
     latent_dim_text,
     latent_dim_common,
-    train_bert = False
+    train_bert = False,
+    learning_rate = 1e-5
   ):
 
   text_encoder.trainable = train_bert
@@ -81,7 +82,7 @@ def get_clip_model(
 
 
   model = CLIP_base(inputs=[image_input, text_id_input, text_mask_input], outputs = [text_projector, image_projector])
-  optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+  optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
   model.compile(loss=clip_loss, optimizer=optimizer, run_eagerly=True)
 
   return model
@@ -100,14 +101,14 @@ class CLIP_base(tf.keras.Model):
 
             loss = self.compiled_loss(text_projector, image_projector, regularization_losses=self.losses)
 
-        # Compute gradients
-        trainable_vars = self.trainable_variables
-        gradients = tape.gradient(loss, trainable_vars)
-        # Update weights
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-        # Update metrics (includes the metric that tracks the loss)
-        # Return a dict mapping metric names to current value
-        return {'loss': loss}
+            # Compute gradients
+            trainable_vars = self.trainable_variables
+            gradients = tape.gradient(loss, trainable_vars)
+            # Update weights
+            self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+            # Update metrics (includes the metric that tracks the loss)
+            # Return a dict mapping metric names to current value
+            return {'loss': loss}
     
     def test_step(self, data):
                 
