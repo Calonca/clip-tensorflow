@@ -162,12 +162,7 @@ class ClipUniqueSampleGenerator(ClipBaseGenerator):
 
 # Utils
 def construct_encoding(x, tokenizer,max_len,return_tensors=None):
-    return dict(tokenizer(x, max_length=max_len, truncation=True, padding="max_length",return_tensors=return_tensors))
-
-# Removing rare words and stopwords
-def construct_encoding_1(x, tokenizer,max_len,return_tensors=None):
-    return dict(tokenizer(x, max_length=max_len, truncation=True, padding="max_length",return_tensors=return_tensors))
-
+  return dict(tokenizer(x, max_length=max_len, truncation=True, padding="max_length",return_tensors=return_tensors))
 
 
 def dup(caption, concepts: set):
@@ -274,8 +269,8 @@ def paths_captions_emb_list(df, all_images_path, tokenizer,max_len, remove_image
     df['caption'] = df['caption'].apply(lambda x:str(x))
     df['ID'] = df['ID'].apply(lambda x:str(x))
     for index, row in tqdm(df.iterrows(),total=df.shape[0]):
-
-        if remove_images_threshold is not None and (cv2.imread(all_images_path + row.ID, 0).sum() > remove_images_threshold):
+        load_image = (remove_images_threshold is None) or (cv2.imread(all_images_path + row.ID, 0).sum() > remove_images_threshold)
+        if load_image:
           pair = {
                 'path' : all_images_path + row.ID,
                 'caption' : row.caption,
