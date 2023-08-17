@@ -74,6 +74,8 @@ def get_clip_model(
 
   text_encoding = text_encoding[:, 0, :]
   image_encoding = image_encoder(image_input)
+  #image_encoding = image_encoder(image_input).pooler_output
+  #image_encoding = image_encoding[:,:,0,0]
 
   text_projector = get_projector(text_encoding, latent_dim_text, latent_dim_common)
   image_projector = get_projector(image_encoding, latent_dim_imgs, latent_dim_common)
