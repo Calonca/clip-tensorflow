@@ -29,7 +29,8 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
                categorical = True,
                augment = False,
                seed=116,
-               preprocess_input = False):
+               preprocess_input = False,
+               channels_first=False):
 
 
     self.data = data
@@ -41,6 +42,7 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
     self.shuffle = shuffle
     self.augment = augment
     self.seed = seed
+    self.channels_first = channels_first
 
   def __len__(self):
     # Return the length of the dataset (number of batches)
@@ -85,7 +87,10 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
 
       # Apply the preprocessing function
       if self.preprocessing_function is not None:
-        image = self.preprocessing_function(image)
+        if self.channels_first:
+          image = np.moveaxis(image, -1, 0)
+        image = self.preprocessing_function(image)['pixel_values'][0]
+        image = np.moveaxis(image, 0, -1)
 
       # Append both image and mask (with added batch dimension) to the corresponding batch lists
       batch_images.append(np.expand_dims(image, 0))
@@ -96,6 +101,9 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
     batch_images = tf.convert_to_tensor(np.concatenate(batch_images, axis=0))
     batch_ids = tf.convert_to_tensor(np.array(batch_ids))
     batch_masks = tf.convert_to_tensor(np.array(batch_masks))
+
+    if self.channels_first:
+      batch_images = np.moveaxis(batch_images, -1, 1) # in pos 0 there is the batch size
 
     return (batch_images, batch_ids, batch_masks)
   
@@ -219,10 +227,22 @@ def remove_words_threshold(caption, threshold = 1):
 
   return ' '.join(filtered_sentence)
 
+def remove_words(caption, words_to_remove):
+  word_tokens = word_tokenize(caption)
+
+  filtered_sentence = [w for w in word_tokens if w not in words_to_remove]
+  #with no lower case conversion
+
+  if len(filtered_sentence) == 0:
+     return caption
+
+  return ' '.join(filtered_sentence)
+
+
 
 
 #Removes stopwords
-def concepts_to_captions_clean(df):
+def concepts_to_captions_clean(df, words_to_remove=None):
   df = df.copy()
   #copy concepts row to old concepts row
   df['caption_old'] = df['caption']
@@ -232,6 +252,8 @@ def concepts_to_captions_clean(df):
   # append caption row to concepts set row
   df['caption'] = df['caption'].apply(lambda x: remove_stopwords(x))
   df['caption'] = df['caption'].apply(lambda x: remove_words_threshold(x))
+  if words_to_remove:
+    df['caption'] = df['caption'].apply(lambda x: remove_words(x, words_to_remove))
   return df
 
 #Removes stopwords and single char words
