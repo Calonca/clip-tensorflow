@@ -34,7 +34,7 @@ def contrastive_loss(logits):
 ## Loss
 def tf_categorical_cross_entropy(y_true, logits):
     return tf.math.reduce_mean(
-        tf.keras.metrics.categoricsl_crossentropy(
+        tf.keras.metrics.categorical_crossentropy(
             y_true=y_true, y_pred=logits, from_logits=True
         )
     )
