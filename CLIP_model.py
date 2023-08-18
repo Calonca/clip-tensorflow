@@ -23,19 +23,22 @@ tfkl = tf.keras.layers
 ## Loss
 def contrastive_loss(logits):
     return tf.math.reduce_mean(
-        tf.keras.metrics.sparse_categorical_crossentropy( #we use sparse because we have integer labels
-            y_true=tf.range(logits.shape[0]), #labels from 0 to batch_size
-            y_pred=logits, from_logits=True
+        tf.keras.metrics.sparse_categorical_crossentropy(  # we use sparse because we have integer labels
+            y_true=tf.range(logits.shape[0]),  # labels from 0 to batch_size
+            y_pred=logits,
+            from_logits=True,
         )
     )
+
+
 ## Loss
-def tf_categorical_cross_entropy(y_true,logits):
+def tf_categorical_cross_entropy(y_true, logits):
     return tf.math.reduce_mean(
-        tf.keras.metrics.categoricsl_crossentropy( 
-            y_true=y_true,
-            y_pred=logits, from_logits=True
+        tf.keras.metrics.categoricsl_crossentropy(
+            y_true=y_true, y_pred=logits, from_logits=True
         )
     )
+
 
 def clip_loss(text_embeds, image_embeds, temperature=None):
     temperature = 1.0
@@ -57,29 +60,33 @@ def clip_loss(text_embeds, image_embeds, temperature=None):
 
     return (caption_loss + image_loss) / 2.0
 
+
 def our_loss(text_embeds, image_embeds, temperature=1):
     """Uses images and text similarities"""
     image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
     text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
- 
-    logits = tf.matmul(image_embeds, text_embeds, transpose_b=True) * temperature #rows are images columns are text
-    
+
+    logits = (
+        tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
+    )  # rows are images columns are text
+
     img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
     txt_sim = tf.matmul(text_embeds, text_embeds, transpose_b=True)
 
     text_true = tf.nn.softmax(
         ((img_sim + txt_sim) / 2.0) / temperature,
-        axis=0,
+        axis=1,
     )
     img_true = tf.nn.softmax(
         ((img_sim + txt_sim) / 2.0) / temperature,
-        axis=1,
+        axis=0,
     )
 
-    img_loss = tf_categorical_cross_entropy(img_true,logits)
-    txt_loss = tf_categorical_cross_entropy(text_true,tf.transpose(logits))
-    loss =  (img_loss + txt_loss) / 2.0
+    img_loss = tf_categorical_cross_entropy(img_true, tf.transpose(logits))
+    txt_loss = tf_categorical_cross_entropy(text_true, logits)
+    loss = (img_loss + txt_loss) / 2.0
     return tf.reduce_mean(loss)
+
 
 def loose_loss(text_embeds, image_embeds, temperature=1):
     """
@@ -99,23 +106,28 @@ def loose_loss(text_embeds, image_embeds, temperature=1):
         axis=-1,
     )
 
-    texts_loss = cross_entropy(y_true,logits , reduction='none')
-    images_loss = cross_entropy(tf.transpose(y_true),tf.transpose(logits), reduction='none')
-    loss =  (images_loss + texts_loss) / 2.0
+    texts_loss = cross_entropy(y_true, logits, reduction="none")
+    images_loss = cross_entropy(
+        tf.transpose(y_true), tf.transpose(logits), reduction="none"
+    )
+    loss = (images_loss + texts_loss) / 2.0
     return tf.reduce_mean(loss)
 
-def cross_entropy(targets, preds, reduction='none'):
-    loss = (-targets * tf.reduce_sum(tf.nn.log_softmax(preds,axis=-1),axis=1))
+
+def cross_entropy(targets, preds, reduction="none"):
+    loss = -targets * tf.reduce_sum(tf.nn.log_softmax(preds, axis=-1), axis=1)
     if reduction == "none":
         return loss
     elif reduction == "mean":
         return tf.reduce_mean(loss)
+
 
 # Utils
 def get_projector(x, latent_dim, output_dim):
     x = tf.keras.layers.Dense(latent_dim, activation="gelu")(x)
     x = tf.keras.layers.Dense(output_dim, activation="linear")(x)
     return x
+
 
 def get_clip_model(
     image_input_shape,
