@@ -68,7 +68,7 @@ def our_loss(text_embeds, image_embeds, temperature=1):
 
     logits = (
         tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
-    )  # rows are images columns are text
+    )  # rows are text and columns are images
 
     img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
     txt_sim = tf.matmul(text_embeds, text_embeds, transpose_b=True)
