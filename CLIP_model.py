@@ -60,32 +60,34 @@ def clip_loss(text_embeds, image_embeds, temperature=None):
 
     return (caption_loss + image_loss) / 2.0
 
+def our_loss_with_temp(temperature:float=1):
+    """Returns the our loss function with a given temperature"""
+    def our_loss(text_embeds, image_embeds):
+        """Uses images and text similarities"""
+        # image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
+        # text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
 
-def our_loss(text_embeds, image_embeds, temperature=1):
-    """Uses images and text similarities"""
-    image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
-    text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
+        logits = (
+            tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
+        )  # rows are text and columns are images
 
-    logits = (
-        tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
-    )  # rows are text and columns are images
+        img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
+        txt_sim = tf.matmul(text_embeds, text_embeds, transpose_b=True)
 
-    img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
-    txt_sim = tf.matmul(text_embeds, text_embeds, transpose_b=True)
+        text_true = tf.nn.softmax(
+            ((img_sim + txt_sim) / 2.0) / temperature,
+            axis=1,
+        )
+        img_true = tf.nn.softmax(
+            ((img_sim + txt_sim) / 2.0) / temperature,
+            axis=0,
+        )
 
-    text_true = tf.nn.softmax(
-        ((img_sim + txt_sim) / 2.0) / temperature,
-        axis=1,
-    )
-    img_true = tf.nn.softmax(
-        ((img_sim + txt_sim) / 2.0) / temperature,
-        axis=0,
-    )
-
-    img_loss = tf_categorical_cross_entropy(img_true, tf.transpose(logits))
-    txt_loss = tf_categorical_cross_entropy(text_true, logits)
-    loss = (img_loss + txt_loss) / 2.0
-    return tf.reduce_mean(loss)
+        img_loss = tf_categorical_cross_entropy(img_true, tf.transpose(logits))
+        txt_loss = tf_categorical_cross_entropy(text_true, logits)
+        loss = (img_loss + txt_loss) / 2.0
+        return loss
+    return our_loss
 
 
 def loose_loss(text_embeds, image_embeds, temperature=1):
