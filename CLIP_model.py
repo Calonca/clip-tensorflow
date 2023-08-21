@@ -60,9 +60,9 @@ def clip_loss(text_embeds, image_embeds, temperature=None):
 
     return (caption_loss + image_loss) / 2.0
 
-def our_loss_with_temp(temperature:float=1):
+def custom_loss_with_temp(temperature:float=1):
     """Returns the our loss function with a given temperature"""
-    def our_loss(text_embeds, image_embeds):
+    def custom_loss(text_embeds, image_embeds):
         """Uses images and text similarities"""
         # image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
         # text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
@@ -87,8 +87,7 @@ def our_loss_with_temp(temperature:float=1):
         txt_loss = tf_categorical_cross_entropy(text_true, logits)
         loss = (img_loss + txt_loss) / 2.0
         return loss
-    return our_loss
-
+    return custom_loss
 
 def loose_loss(text_embeds, image_embeds, temperature=1):
     """
@@ -130,7 +129,6 @@ def get_projector(x, latent_dim, output_dim):
     x = tf.keras.layers.Dense(output_dim, activation="linear")(x)
     return x
 
-
 def get_clip_model(
     image_input_shape,
     text_input_shape,
@@ -142,7 +140,13 @@ def get_clip_model(
     train_bert=False,
     learning_rate=1e-5,
     loss=clip_loss,
-):
+    custom_metric = None
+)->tf.keras.Model:
+    """Return a CLIP model
+
+    Args:
+        eval_loss: If not None the model will calculate the provided loss function as an additional metric
+    """
     text_encoder.trainable = train_bert
 
     image_input = tf.keras.Input(shape=image_input_shape)
@@ -163,10 +167,18 @@ def get_clip_model(
 
     image_projector = tf.squeeze(image_projector)
 
-    model = CLIP_base(
-        inputs=[image_input, text_id_input, text_mask_input],
-        outputs=[text_projector, image_projector],
-    )
+    if custom_metric is None:
+        model = CLIP_base(
+            inputs=[image_input, text_id_input, text_mask_input],
+            outputs=[text_projector, image_projector]
+        )
+    else:
+        model = CLIP_with_custom_metric(
+            inputs=[image_input, text_id_input, text_mask_input],
+            outputs=[text_projector, image_projector],
+            custom_metric=custom_metric
+        )
+    
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
 
@@ -230,3 +242,92 @@ class CLIP_base(tf.keras.Model):
         )
 
         return text_embeds, image_embeds
+
+class CLIP_with_custom_metric(tf.keras.Model):
+    """Same architecture as CLIP_Base but computes the given custom metric in addition to the loss.
+    https://github.com/keras-team/keras/blob/master/keras/engine/training.py#L1157-L1211"""
+    def __init__(self,custom_metric, *args, **kwargs):
+        super(CLIP_with_custom_metric, self).__init__(*args, **kwargs)
+        self.loss_tracker = tf.keras.metrics.Mean(name='loss')
+        self.custom_metric_tracker = tf.keras.metrics.MeanMetricWrapper(name=custom_metric.__name__,fn=custom_metric)
+
+    def train_step(self, data):
+        # Unpack the data. Its structure depends on your model and
+        # on what you pass to `fit()`.
+
+        imgs, ids, masks = tf.keras.utils.unpack_x_y_sample_weight(data)
+
+        with tf.GradientTape() as tape:
+            text_projector_o, image_projector_o = self(
+                [imgs, ids, masks], training=True
+            )  # Forward pass
+            loss = self.compute_loss(text_projector_o, image_projector_o)
+
+        # Compute gradients
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Updates the metrics tracking the loss
+        loss = self.compute_loss(text_projector_o, image_projector_o)
+
+        # Update metrics (includes the metric that tracks the loss)
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss)
+            else:
+                metric.update_state(text_projector_o, image_projector_o)
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
+
+    def test_step(self, data):
+        # Unpack the data
+        imgs, ids, masks = tf.keras.utils.unpack_x_y_sample_weight(data)
+        # Compute predictions
+        text_projector_o, image_projector_o = self(
+            [imgs, ids, masks], training=False
+        )  # Forward pass
+
+        # Updates the metrics tracking the loss
+        loss = self.compute_loss(text_projector_o, image_projector_o)
+
+        # Update metrics (includes the metric that tracks the loss)
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss)
+            else:
+                metric.update_state(text_projector_o, image_projector_o)
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
+
+    def predict_step(self, data):
+        imgs, ids, masks = tf.keras.utils.unpack_x_y_sample_weight(data)
+
+        # Compute predictions
+        text_embeds, image_embeds = self(
+            [imgs, ids, masks], training=False
+        )  # Forward pass
+
+        image_embeds = image_embeds / tf.norm(
+            tensor=image_embeds, ord="euclidean", axis=-1, keepdims=True
+        )
+        text_embeds = text_embeds / tf.norm(
+            tensor=text_embeds, ord="euclidean", axis=-1, keepdims=True
+        )
+
+        return text_embeds, image_embeds
+    
+    def compute_loss(self, text_projector_o, image_projector_o):
+        loss = self.compiled_loss(
+            text_projector_o, image_projector_o, regularization_losses=self.losses
+        )
+        self.loss_tracker.update_state(loss)
+        return loss   
+
+    def reset_metrics(self):
+        self.loss_tracker.reset_states()
+        self.custom_metric_tracker.reset_states()
+
+    @property
+    def metrics(self):
+        return [self.loss_tracker, self.custom_metric_tracker]
