@@ -8,6 +8,7 @@ import tensorflow as tf
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from tqdm import tqdm
+import medialpy
 
 
 class ClipBaseGenerator(tf.keras.utils.Sequence):
@@ -26,10 +27,8 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
                batch_size=16, # Batch size
                out_shape = (100,100),
                shuffle=False,
-               categorical = True,
                augment = False,
                seed=116,
-               preprocess_input = False,
                channels_first=False):
 
 
@@ -59,12 +58,16 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
 
     curr_data = self.data[index] # Get filename at index
     curr_filename = curr_data['path']
-    curr_ids = np.array(curr_data['encoding']['input_ids'])
-    curr_masks = np.array(curr_data['encoding']['attention_mask'])
+
+    curr_caption_ids = np.array(curr_data['caption_encoding']['input_ids'])
+    curr_caption_masks = np.array(curr_data['caption_encoding']['attention_mask'])
+
+    curr_concepts_ids = np.array(curr_data['concepts_encoding']['input_ids'])
+    curr_concepts_masks = np.array(curr_data['concepts_encoding']['attention_mask'])
     
     image = cv2.imread(curr_filename)
 
-    return image, curr_ids, curr_masks
+    return image, curr_caption_ids, curr_caption_masks, curr_concepts_ids, curr_concepts_masks
 
   def __getitem__(self, index):
     # In this function we generate a batch (of size self.batch_size) of images and corresponding masks
@@ -77,13 +80,17 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
 
     # Init lists that will contain images and masks
     batch_images = []
-    batch_ids = []
-    batch_masks = []
+
+    batch_caption_ids = []
+    batch_caption_masks = []
+
+    batch_concepts_ids = []
+    batch_concepts_masks = []
 
     # Cycle over the indices
     for idx in current_indices:
       # Get single image/mask at index 'idx'
-      image, curr_ids, curr_masks = self.get_image_and_label(idx)
+      image, curr_caption_ids, curr_caption_masks, curr_concepts_ids, curr_concepts_masks = self.get_image_and_label(idx)
 
       # Apply the preprocessing function
       if self.preprocessing_function is not None:
@@ -91,21 +98,32 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
           image = np.moveaxis(image, -1, 0)
         image = self.preprocessing_function(image)['pixel_values'][0]
         image = np.moveaxis(image, 0, -1)
+    
+      image = tf.convert_to_tensor(image)
 
       # Append both image and mask (with added batch dimension) to the corresponding batch lists
-      batch_images.append(np.expand_dims(image, 0))
-      batch_ids.append(curr_ids)
-      batch_masks.append(curr_masks)
+      batch_images.append(tf.expand_dims(image, 0))
+
+      batch_caption_ids.append(curr_caption_ids)
+      batch_caption_masks.append(curr_caption_masks)
+
+      batch_concepts_ids.append(curr_concepts_ids)
+      batch_concepts_masks.append(curr_concepts_masks)
      
     # Finally, obtain a final batch by concatenating all the images over the batch dimension
-    batch_images = tf.convert_to_tensor(np.concatenate(batch_images, axis=0))
-    batch_ids = tf.convert_to_tensor(np.array(batch_ids))
-    batch_masks = tf.convert_to_tensor(np.array(batch_masks))
+    batch_images = tf.convert_to_tensor(tf.concat(batch_images, axis=0))
+
+
+    batch_caption_ids = tf.convert_to_tensor(batch_caption_ids)
+    batch_caption_masks = tf.convert_to_tensor(batch_caption_masks)
+
+    batch_concepts_ids = tf.convert_to_tensor(batch_concepts_ids)
+    batch_concepts_masks = tf.convert_to_tensor(batch_concepts_masks)
 
     if self.channels_first:
       batch_images = np.moveaxis(batch_images, -1, 1) # in pos 0 there is the batch size
 
-    return (batch_images, batch_ids, batch_masks)
+    return ([batch_images, batch_caption_ids, batch_caption_masks, batch_concepts_ids, batch_concepts_masks], None)
   
 ##############################################################################################################
 # This generator select between a random image and text for each sample, Work In Progress
@@ -233,13 +251,21 @@ def remove_words(caption, words_to_remove):
 
   return ' '.join(filtered_sentence)
 
-
-
+def expand_medical_acronyms(text):
+    words = text.split(" ")
+    new_text=[]
+    for w in words:
+      if medialpy.exists(w.upper()):
+        w = medialpy.find(w.upper()).meaning[0] 
+      
+      new_text.append(w)
+    
+    return " ".join(new_text)
 
 #Removes stopwords
-def concepts_to_captions_clean(df, words_to_remove=None):
+def captions_clean(df, words_to_remove=None, expand_med_acronyms=True):
   df = df.copy()
-  #copy concepts row to old concepts row
+
   df['caption_old'] = df['caption']
   nltk.download('stopwords')
   nltk.download('punkt')
@@ -247,12 +273,18 @@ def concepts_to_captions_clean(df, words_to_remove=None):
   # append caption row to concepts set row
   df['caption'] = df['caption'].apply(lambda x: remove_stopwords(x))
   df['caption'] = df['caption'].apply(lambda x: remove_words_threshold(x))
+
   if words_to_remove:
     df['caption'] = df['caption'].apply(lambda x: remove_words(x, words_to_remove))
+
+  if expand_med_acronyms:
+    df['caption'] = df['caption'].apply(lambda x: expand_medical_acronyms(x))
+  
+
   return df
 
 #Removes stopwords and single char words
-def concepts_to_captions_remove_stopwords(df):
+def captions_remove_stopwords(df):
   df = df.copy()
   #copy concepts row to old concepts row
   df['caption_old'] = df['caption']
@@ -263,18 +295,37 @@ def concepts_to_captions_remove_stopwords(df):
   df['caption'] = df['caption'].apply(lambda x: remove_stopwords(x))
   return df
 
+def concepts_to_str(df, expand_med_acronyms=True):
+  concepts = df
+
+  if expand_med_acronyms:
+    return expand_medical_acronyms(" ".join(concepts))
+
+  else:
+    return " ".join(concepts)
+
 # Preprocessing function that creates images and labels pairs
-def paths_captions_emb_list(df, all_images_path, tokenizer,max_len, remove_images_threshold=None):
+def paths_captions_concepts_emb_list(df, 
+                            all_images_path, 
+                            tokenizer,
+                            max_len_concepts, 
+                            max_len_captions,
+                            remove_images_threshold=None):
     imagesAndLabels = []
     df['caption'] = df['caption'].apply(lambda x:str(x))
     df['ID'] = df['ID'].apply(lambda x:str(x))
     for index, row in tqdm(df.iterrows(),total=df.shape[0]):
+        concepts_str = concepts_to_str(row.concepts, expand_med_acronyms=True)
+
         load_image = (remove_images_threshold is None) or (cv2.imread(all_images_path + row.ID, 0).sum() > remove_images_threshold)
         if load_image:
           pair = {
                 'path' : all_images_path + row.ID,
                 'caption' : row.caption,
-                'encoding': construct_encoding(row.caption,tokenizer,max_len)
+                'concepts': concepts_str,
+                'caption_encoding': construct_encoding(row.caption,tokenizer,max_len_captions),
+                'concepts_encoding': construct_encoding(row.caption,tokenizer,max_len_concepts),
+
             }
 
           imagesAndLabels.append(pair)

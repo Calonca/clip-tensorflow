@@ -130,6 +130,66 @@ def get_projector(x, latent_dim, output_dim):
     x = tf.keras.layers.Dense(output_dim, activation="linear")(x)
     return x
 
+def get_clip_fusion_model(
+    image_input_shape,
+    concepts_input_shape,
+    caption_input_shape,
+    text_encoder,
+    image_encoder,
+    latent_dim_imgs,
+    latent_dim_text,
+    latent_dim_common,
+    train_bert=False,
+    learning_rate=1e-5,
+    loss=clip_loss,
+):
+    text_encoder.trainable = train_bert
+
+    image_input = tf.keras.Input(shape=image_input_shape)
+    caption_id_input = tf.keras.Input(shape=caption_input_shape, dtype=tf.int32)
+    caption_mask_input = tf.keras.Input(shape=caption_input_shape)
+
+    concepts_id_input = tf.keras.Input(shape=concepts_input_shape, dtype=tf.int32)
+    concepts_mask_input = tf.keras.Input(shape=concepts_input_shape)
+
+    caption_encoding = text_encoder(
+        input_ids=caption_id_input, attention_mask=caption_mask_input
+    ).last_hidden_state
+
+    concepts_encoding = text_encoder(
+        input_ids=caption_id_input, attention_mask=concepts_mask_input
+    ).last_hidden_state
+
+    caption_encoding = caption_encoding[:, 0, :]
+    concepts_encoding = concepts_encoding[:, 0, :]
+
+    image_encoding = image_encoder(image_input)
+    # image_encoding = image_encoder(image_input).pooler_output
+    # image_encoding = image_encoding[:,:,0,0]
+
+    text_encoding = tf.concat(values=[caption_encoding, concepts_encoding], axis=1)
+    """print(caption_encoding)
+    print(concepts_encoding)
+    print(text_encoding)"""
+
+    text_projector = get_projector(text_encoding, latent_dim_text, latent_dim_common)
+    image_projector = get_projector(image_encoding, latent_dim_imgs, latent_dim_common)
+
+    """print(text_projector)
+    print(image_projector)"""
+
+    image_projector = tf.squeeze(image_projector)
+
+    model = CLIP_fusion(
+        inputs=[image_input, caption_id_input, caption_mask_input, concepts_id_input, concepts_mask_input],
+        outputs=[text_projector, image_projector],
+        
+    )
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
+
+    return model
+
 
 def get_clip_model(
     image_input_shape,
@@ -171,6 +231,64 @@ def get_clip_model(
     model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
 
     return model
+
+
+class CLIP_fusion(tf.keras.Model):
+    def train_step(self, data):
+        # Unpack the data. Its structure depends on your model and
+        # on what you pass to `fit()`.
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+
+        with tf.GradientTape() as tape:
+            text_projector, image_projector = self(
+                [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=True
+            )  # Forward pass
+            # Compute the loss value
+            # (the loss function is configured in `compile()`)
+
+            loss = self.compiled_loss(
+                text_projector, image_projector, regularization_losses=self.losses
+            )
+
+            # Compute gradients
+            trainable_vars = self.trainable_variables
+            gradients = tape.gradient(loss, trainable_vars)
+            # Update weights
+            self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+            # Update metrics (includes the metric that tracks the loss)
+            # Return a dict mapping metric names to current value
+            return {"loss": loss}
+
+    def test_step(self, data):
+        # Unpack the data
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+        # Compute predictions
+        text_projector, image_projector = self(
+            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+        )  # Forward pass
+        # Updates the metrics tracking the loss
+        loss = self.compiled_loss(
+            text_projector, image_projector, regularization_losses=self.losses
+        )
+        # Update the metrics.
+        return {"loss": loss}
+
+    def predict_step(self, data):
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+
+        # Compute predictions
+        text_embeds, image_embeds = self(
+            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+        )  # Forward pass
+
+        image_embeds = image_embeds / tf.norm(
+            tensor=image_embeds, ord="euclidean", axis=-1, keepdims=True
+        )
+        text_embeds = text_embeds / tf.norm(
+            tensor=text_embeds, ord="euclidean", axis=-1, keepdims=True
+        )
+
+        return text_embeds, image_embeds
 
 
 class CLIP_base(tf.keras.Model):
