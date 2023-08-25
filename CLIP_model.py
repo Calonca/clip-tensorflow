@@ -674,7 +674,6 @@ def get_clip_model(
 
     return model
 
-
 class CLIP_fusion(tf.keras.Model):
     def train_step(self, data):
         # Unpack the data. Its structure depends on your model and
@@ -816,6 +815,23 @@ class CLIP_fusion_with_custom_metric(tf.keras.Model):
                 results.update(res)
             else:
                 results[m.name] = res
+        
+        return results
+
+    def predict_step(self, data):
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+
+        text_embeds, image_embeds = self(
+            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+        )  # Forward pass
+        image_embeds = image_embeds / tf.norm(
+            tensor=image_embeds, ord="euclidean", axis=-1, keepdims=True
+        )
+        text_embeds = text_embeds / tf.norm(
+            tensor=text_embeds, ord="euclidean", axis=-1, keepdims=True
+        )
+
+        return text_embeds, image_embeds
 
     def compute_loss(self, text_projector, image_projector):
         loss = self.compiled_loss(
