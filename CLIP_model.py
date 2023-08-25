@@ -14,6 +14,7 @@ import shutil
 import scipy
 from tqdm import tqdm
 import albumentations as A
+import tensorflow_addons as tfa
 
 # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 tfk = tf.keras
@@ -40,8 +41,56 @@ def tf_categorical_cross_entropy(y_true, logits):
     )
 
 
-def clip_loss(text_embeds, image_embeds, temperature=None):
-    temperature = 1.0
+def get_hybrid_loss(
+    temperature_base_loss=None, 
+    temperature_custom_loss=0.5,
+    weight:float=0.5,
+    verbose_clip_loss=False,
+    verbose_custom_loss=False):
+
+    def hybrid_loss(text_embeds, image_embeds):
+
+        
+        #return c_loss + (1-weight)*cu_loss
+        if verbose_clip_loss or verbose_custom_loss:
+
+            losses_dict = {}
+
+            if verbose_clip_loss:
+                c_loss_dict = clip_loss(text_embeds, image_embeds, temperature_base_loss, verbose_clip_loss)
+                losses_dict.update(c_loss_dict)
+                c_loss = c_loss_dict['clip_loss']
+            else:
+                c_loss = clip_loss(text_embeds, image_embeds, temperature_base_loss)
+
+
+            if verbose_custom_loss:
+                cu_loss_dict = custom_loss(text_embeds, image_embeds, temperature_base_loss, verbose_custom_loss)
+                losses_dict.update(cu_loss_dict)
+                cu_loss = cu_loss_dict['custom_loss']
+            else:
+                cu_loss = custom_loss(text_embeds, image_embeds, temperature_base_loss)
+
+            hybrid_loss = c_loss * cu_loss
+
+            losses_dict['loss'] = hybrid_loss
+
+            return losses_dict
+
+        else:
+
+            c_loss = clip_loss(text_embeds, image_embeds, temperature_base_loss)
+            cu_loss = custom_loss(text_embeds, image_embeds, temperature_custom_loss)
+
+            return c_loss * cu_loss
+
+    return hybrid_loss
+
+
+def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
+
+    if temperature is None:
+        temperature = 1.0
 
     # normalized feature
     image_embeds = image_embeds / tf.norm(
@@ -58,9 +107,58 @@ def clip_loss(text_embeds, image_embeds, temperature=None):
     caption_loss = contrastive_loss(text_logits)
     image_loss = contrastive_loss(image_logits)
 
-    return (caption_loss + image_loss) / 2.0
 
-def custom_loss_with_temp(temperature:float=1):
+    loss = (caption_loss + image_loss) / 2.0
+    if verbose:
+        losses_dict = {}
+        losses_dict['clip_loss'] = loss
+        losses_dict['clip_caption_loss'] = caption_loss
+        losses_dict['clip_image_loss'] = image_loss
+
+        return losses_dict
+
+    return loss
+
+"""Returns the our loss function with a given temperature"""
+def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
+    """Uses images and text similarities"""
+    # image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
+    # text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
+
+    logits = (
+            tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
+        )  # rows are text and columns are images
+
+    img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
+    txt_sim = tf.matmul(text_embeds, text_embeds, transpose_b=True)
+
+    text_true = tf.nn.softmax(
+            ((img_sim + txt_sim) / 2.0) / temperature,
+            axis=1,
+        )
+    img_true = tf.nn.softmax(
+            ((img_sim + txt_sim) / 2.0) / temperature,
+            axis=0,
+        )
+
+    img_loss = tf_categorical_cross_entropy(img_true, tf.transpose(logits))
+    txt_loss = tf_categorical_cross_entropy(text_true, logits)
+    loss = (img_loss + txt_loss) / 2.0
+
+
+    if verbose:
+        losses_dict = {}
+        losses_dict['custom_loss'] = loss
+        losses_dict['custom_caption_loss'] = img_loss
+        losses_dict['custom_image_loss'] = txt_loss
+
+    return loss
+
+def custom_loss_with_temp(temperature:float):
+
+    if temperature is None:
+        temperature=1.0
+
     """Returns the our loss function with a given temperature"""
     def custom_loss(text_embeds, image_embeds):
         """Uses images and text similarities"""
@@ -122,12 +220,34 @@ def cross_entropy(targets, preds, reduction="none"):
     elif reduction == "mean":
         return tf.reduce_mean(loss)
 
-
 # Utils
-def get_projector(x, latent_dim, output_dim):
-    x = tf.keras.layers.Dense(latent_dim, activation="gelu")(x)
-    x = tf.keras.layers.Dense(output_dim, activation="linear")(x)
+def get_projector(x, latent_dim, output_dim, dropout_rate):
+    projected = tf.keras.layers.Dense(output_dim, activation="gelu")(x)
+    x = tf.keras.layers.Dense(output_dim, activation="linear")(projected)
+    x = tf.keras.layers.Dropout(dropout_rate)(x)
+    x = x+projected
+    x = tf.keras.layers.LayerNormalization()(x)
     return x
+
+class ProjectorLayer(tf.keras.layers.Layer):
+    def __init__(self, latent_dim, output_dim, dropout_rate, **kwargs):
+        super(ProjectorLayer, self).__init__(**kwargs)
+        self.latent_dim = latent_dim
+        self.output_dim = output_dim
+        self.dropout_rate = dropout_rate
+        
+        # Define the layers
+        self.dense_gelu = tf.keras.layers.Dense(self.output_dim, activation="gelu")
+        self.dense_linear = tf.keras.layers.Dense(self.output_dim, activation="linear")
+        self.dropout = tf.keras.layers.Dropout(self.dropout_rate)
+        self.layer_norm = tf.keras.layers.LayerNormalization()
+
+    def call(self, inputs):
+        projected = self.dense_gelu(inputs)
+        x = self.dense_linear(projected)
+        x = self.dropout(x)
+        x = x + projected
+        return self.layer_norm(x)
 
 def get_clip_fusion_model(
     image_input_shape,
@@ -139,9 +259,12 @@ def get_clip_fusion_model(
     latent_dim_text,
     latent_dim_common,
     train_bert=False,
-    learning_rate=1e-5,
+    projector_dropout_rate=0.1,
     loss=clip_loss,
-    custom_metric = None
+    custom_metric = None,
+    lr_image_encoder = 1e-4,
+    lr_text_encoder = 1e-5,
+    lr_head = 1e-3
 )->tf.keras.Model:
     """Return a CLIP model
 
@@ -162,7 +285,7 @@ def get_clip_fusion_model(
     ).last_hidden_state
 
     concepts_encoding = text_encoder(
-        input_ids=caption_id_input, attention_mask=concepts_mask_input
+        input_ids=concepts_id_input, attention_mask=concepts_mask_input
     ).last_hidden_state
 
     caption_encoding = caption_encoding[:, 0, :]
@@ -177,24 +300,324 @@ def get_clip_fusion_model(
     print(concepts_encoding)
     print(text_encoding)"""
 
-    text_projector = get_projector(text_encoding, latent_dim_text, latent_dim_common)
-    image_projector = get_projector(image_encoding, latent_dim_imgs, latent_dim_common)
+    text_projector_name = "text_projector"
+    image_projector_name = "image_projector"
+
+    text_projector = ProjectorLayer(latent_dim_text, latent_dim_common, projector_dropout_rate, name=text_projector_name)(text_encoding)
+    image_projector = ProjectorLayer(latent_dim_imgs, latent_dim_common, projector_dropout_rate, name=image_projector_name)(image_encoding)
 
     """print(text_projector)
     print(image_projector)"""
 
     image_projector = tf.squeeze(image_projector)
 
-    model = CLIP_fusion(
+    if custom_metric is None:
+        model = CLIP_fusion(
         inputs=[image_input, caption_id_input, caption_mask_input, concepts_id_input, concepts_mask_input],
         outputs=[text_projector, image_projector],
         
-    )
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+        )
+    else:
+        model = CLIP_fusion_with_custom_metric(
+            inputs=[image_input, caption_id_input, caption_mask_input, concepts_id_input, concepts_mask_input],
+            outputs=[text_projector, image_projector],
+            custom_metric=custom_metric
+        )
+
+
+    image_encoder_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_image_encoder)
+    text_encoder_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_text_encoder)
+    text_head_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_head)
+    image_head_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_head)
+
+    optimizers = [image_encoder_optimizer,text_encoder_optimizer, text_head_optimizer, image_head_optimizer]
+
+    optimizers_and_layers = [
+        (optimizers[0], model.get_layer(image_encoder.name)), 
+        (optimizers[1], model.get_layer(text_encoder.name)),
+        (optimizers[2], model.get_layer(text_projector_name)),
+        (optimizers[3], model.get_layer(image_projector_name))
+        ]
+    
+    optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
+    #optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
 
     return model
 
+class MeanMetricClipLoss(tf.keras.metrics.Metric):
+    def __init__(self, name=None, **kwargs):
+        if name is None:
+            name = 'mean_metric'
+        super(MeanMetricClipLoss, self).__init__(name=name, **kwargs)
+        self.fn = get_hybrid_loss(temperature_base_loss=0.8, temperature_custom_loss=0.5, weight=0.25, verbose_clip_loss=True)
+        self.clip_loss = self.add_weight(name="clip_loss_sum", initializer="zeros")
+        self.clip_caption_loss = self.add_weight(name="clip_caption_loss_sum", initializer="zeros")
+        self.clip_image_loss = self.add_weight(name="clip_image_loss_sum", initializer="zeros")
+        self.loss = self.add_weight(name="loss_sum", initializer="zeros")
+        self.num_samples = self.add_weight(name="num_samples", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = self.fn(y_true, y_pred)
+        batch_size = tf.cast(tf.shape(y_true)[0], tf.float32)
+        self.clip_loss.assign_add(values['clip_loss'] * batch_size)
+        self.clip_caption_loss.assign_add(values['clip_caption_loss'] * batch_size)
+        self.clip_image_loss.assign_add(values['clip_image_loss'] * batch_size)
+        self.loss.assign_add(values['loss'] * batch_size)
+        self.num_samples.assign_add(batch_size)
+
+    def result(self):
+        mean_clip_loss = self.clip_loss / self.num_samples
+        mean_clip_caption_loss = self.clip_caption_loss / self.num_samples
+        mean_clip_image_loss = self.clip_image_loss / self.num_samples
+        mean_loss = self.loss / self.num_samples
+
+        return {
+            'mean_clip_loss': mean_clip_loss,
+            'mean_clip_caption_loss': mean_clip_caption_loss,
+            'mean_clip_image_loss': mean_clip_image_loss,
+            'mean_loss': mean_loss
+        }
+
+    def reset_states(self):
+        self.clip_loss.assign(0.)
+        self.clip_caption_loss.assign(0.)
+        self.clip_image_loss.assign(0.)
+        self.loss.assign(0.)
+        self.num_samples.assign(0.)
+
+class LastValueMetricClipLoss(tf.keras.metrics.Metric):
+    def __init__(self, name=None, **kwargs):
+        if name is None:
+            name = 'last_value_metric'
+        super(LastValueMetricClipLoss, self).__init__(name=name, **kwargs)
+        self.fn =  get_hybrid_loss(temperature_base_loss=0.8, temperature_custom_loss=0.5, weight=0.25, verbose_clip_loss=True)
+        self.clip_loss = self.add_weight(name="clip_loss", initializer="zeros")
+        self.clip_caption_loss = self.add_weight(name="clip_caption_loss", initializer="zeros")
+        self.clip_image_loss = self.add_weight(name="clip_image_loss", initializer="zeros")
+        self.loss = self.add_weight(name="loss", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = self.fn(y_true, y_pred)
+        self.clip_loss.assign(values['clip_loss'])
+        self.clip_caption_loss.assign(values['clip_caption_loss'])
+        self.clip_image_loss.assign(values['clip_image_loss'])
+        self.loss.assign(values['loss'])
+
+    def result(self):
+        return {
+            'clip_loss': self.clip_loss,
+            'clip_caption_loss': self.clip_caption_loss,
+            'clip_image_loss': self.clip_image_loss,
+            'loss': self.loss
+        }
+
+    def reset_states(self):
+        self.clip_loss.assign(0.)
+        self.clip_caption_loss.assign(0.)
+        self.clip_image_loss.assign(0.)
+        self.loss.assign(0.)
+
+class MeanMetricCustomLoss(tf.keras.metrics.Metric):
+    def __init__(self, name=None, **kwargs):
+        if name is None:
+            name = 'mean_metric'
+        super(MeanMetricCustomLoss, self).__init__(name=name, **kwargs)
+        self.fn = get_hybrid_loss(temperature_base_loss=0.8, temperature_custom_loss=0.5, weight=0.25, verbose_custom_loss=True)
+        self.custom_loss = self.add_weight(name="custom_loss_sum", initializer="zeros")
+        self.custom_caption_loss = self.add_weight(name="custom_caption_loss_sum", initializer="zeros")
+        self.custom_image_loss = self.add_weight(name="custom_image_loss_sum", initializer="zeros")
+        self.loss = self.add_weight(name="loss_sum", initializer="zeros")
+        self.num_samples = self.add_weight(name="num_samples", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = self.fn(y_true, y_pred)
+        batch_size = tf.cast(tf.shape(y_true)[0], tf.float32)
+        self.custom_loss.assign_add(values['custom_loss'] * batch_size)
+        self.custom_caption_loss.assign_add(values['custom_caption_loss'] * batch_size)
+        self.custom_image_loss.assign_add(values['custom_image_loss'] * batch_size)
+        self.loss.assign_add(values['loss'] * batch_size)
+        self.num_samples.assign_add(batch_size)
+
+    def result(self):
+        mean_custom_loss = self.custom_loss / self.num_samples
+        mean_custom_caption_loss = self.custom_caption_loss / self.num_samples
+        mean_custom_image_loss = self.custom_image_loss / self.num_samples
+        mean_loss = self.loss / self.num_samples
+
+        return {
+            'mean_custom_loss': mean_custom_loss,
+            'mean_custom_caption_loss': mean_custom_caption_loss,
+            'mean_custom_image_loss': mean_custom_image_loss,
+            'mean_loss': mean_loss
+        }
+
+    def reset_states(self):
+        self.custom_loss.assign(0.)
+        self.custom_caption_loss.assign(0.)
+        self.custom_image_loss.assign(0.)
+        self.loss.assign(0.)
+        self.num_samples.assign(0.)
+
+class LastValueMetricCustomLoss(tf.keras.metrics.Metric):
+    def __init__(self, name=None, **kwargs):
+        if name is None:
+            name = 'last_value_metric'
+        super(LastValueMetricCustomLoss, self).__init__(name=name, **kwargs)
+        self.fn = get_hybrid_loss(temperature_base_loss=0.8, temperature_custom_loss=0.5, weight=0.25, verbose_custom_loss=True)
+        self.custom_loss = self.add_weight(name="custom_loss", initializer="zeros")
+        self.custom_caption_loss = self.add_weight(name="custom_caption_loss", initializer="zeros")
+        self.custom_image_loss = self.add_weight(name="custom_image_loss", initializer="zeros")
+        self.loss = self.add_weight(name="loss", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = self.fn(y_true, y_pred)
+        self.custom_loss.assign(values['custom_loss'])
+        self.custom_caption_loss.assign(values['custom_caption_loss'])
+        self.custom_image_loss.assign(values['custom_image_loss'])
+        self.loss.assign(values['loss'])
+
+    def result(self):
+        return {
+            'custom_loss': self.custom_loss,
+            'custom_caption_loss': self.custom_caption_loss,
+            'custom_image_loss': self.custom_image_loss,
+            'loss': self.loss
+        }
+
+    def reset_states(self):
+        self.custom_loss.assign(0.)
+        self.custom_caption_loss.assign(0.)
+        self.custom_image_loss.assign(0.)
+        self.loss.assign(0.)
+
+class MeanMetricCombinedLoss(tf.keras.metrics.Metric):
+    def __init__(self, name=None, **kwargs):
+        if name is None:
+            name = 'mean_metric_combined'
+        super(MeanMetricCombinedLoss, self).__init__(name=name, **kwargs)
+        self.fn = get_hybrid_loss(temperature_base_loss=0.8, temperature_custom_loss=0.5, weight=0.25, verbose_custom_loss=True, verbose_clip_Loss=True)
+        
+        # Custom losses
+        self.custom_loss = self.add_weight(name="custom_loss_sum", initializer="zeros")
+        self.custom_caption_loss = self.add_weight(name="custom_caption_loss_sum", initializer="zeros")
+        self.custom_image_loss = self.add_weight(name="custom_image_loss_sum", initializer="zeros")
+        
+        # Clip losses
+        self.clip_loss = self.add_weight(name="clip_loss_sum", initializer="zeros")
+        self.clip_caption_loss = self.add_weight(name="clip_caption_loss_sum", initializer="zeros")
+        self.clip_image_loss = self.add_weight(name="clip_image_loss_sum", initializer="zeros")
+        
+        self.loss = self.add_weight(name="loss_sum", initializer="zeros")
+        self.num_samples = self.add_weight(name="num_samples", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = self.fn(y_true, y_pred)
+        batch_size = tf.cast(tf.shape(y_true)[0], tf.float32)
+        
+        # Update custom losses
+        self.custom_loss.assign_add(values['custom_loss'] * batch_size)
+        self.custom_caption_loss.assign_add(values['custom_caption_loss'] * batch_size)
+        self.custom_image_loss.assign_add(values['custom_image_loss'] * batch_size)
+        
+        # Update clip losses
+        self.clip_loss.assign_add(values['clip_loss'] * batch_size)
+        self.clip_caption_loss.assign_add(values['clip_caption_loss'] * batch_size)
+        self.clip_image_loss.assign_add(values['clip_image_loss'] * batch_size)
+        
+        self.loss.assign_add(values['loss'] * batch_size)
+        self.num_samples.assign_add(batch_size)
+
+    def result(self):
+        # Mean custom losses
+        mean_custom_loss = self.custom_loss / self.num_samples
+        mean_custom_caption_loss = self.custom_caption_loss / self.num_samples
+        mean_custom_image_loss = self.custom_image_loss / self.num_samples
+        
+        # Mean clip losses
+        mean_clip_loss = self.clip_loss / self.num_samples
+        mean_clip_caption_loss = self.clip_caption_loss / self.num_samples
+        mean_clip_image_loss = self.clip_image_loss / self.num_samples
+        
+        mean_loss = self.loss / self.num_samples
+
+        return {
+            'mean_custom_loss': mean_custom_loss,
+            'mean_custom_caption_loss': mean_custom_caption_loss,
+            'mean_custom_image_loss': mean_custom_image_loss,
+            'mean_clip_loss': mean_clip_loss,
+            'mean_clip_caption_loss': mean_clip_caption_loss,
+            'mean_clip_image_loss': mean_clip_image_loss,
+            'mean_loss': mean_loss
+        }
+
+    def reset_states(self):
+        self.custom_loss.assign(0.)
+        self.custom_caption_loss.assign(0.)
+        self.custom_image_loss.assign(0.)
+        
+        self.clip_loss.assign(0.)
+        self.clip_caption_loss.assign(0.)
+        self.clip_image_loss.assign(0.)
+        
+        self.loss.assign(0.)
+        self.num_samples.assign(0.)
+
+class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
+    def __init__(self, name=None, **kwargs):
+        if name is None:
+            name = 'last_value_metric_combined'
+        super(LastValueMetricCombinedLoss, self).__init__(name=name, **kwargs)
+        self.fn = get_hybrid_loss(temperature_base_loss=0.8, temperature_custom_loss=0.5, weight=0.25, verbose_custom_loss=True, verbose_clip_Loss=True)
+        
+        # Custom losses
+        self.custom_loss = self.add_weight(name="custom_loss", initializer="zeros")
+        self.custom_caption_loss = self.add_weight(name="custom_caption_loss", initializer="zeros")
+        self.custom_image_loss = self.add_weight(name="custom_image_loss", initializer="zeros")
+        
+        # Clip losses
+        self.clip_loss = self.add_weight(name="clip_loss", initializer="zeros")
+        self.clip_caption_loss = self.add_weight(name="clip_caption_loss", initializer="zeros")
+        self.clip_image_loss = self.add_weight(name="clip_image_loss", initializer="zeros")
+        
+        self.loss = self.add_weight(name="loss", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        values = self.fn(y_true, y_pred)
+        
+        # Update custom losses
+        self.custom_loss.assign(values['custom_loss'])
+        self.custom_caption_loss.assign(values['custom_caption_loss'])
+        self.custom_image_loss.assign(values['custom_image_loss'])
+        
+        # Update clip losses
+        self.clip_loss.assign(values['clip_loss'])
+        self.clip_caption_loss.assign(values['clip_caption_loss'])
+        self.clip_image_loss.assign(values['clip_image_loss'])
+        
+        self.loss.assign(values['loss'])
+
+    def result(self):
+        return {
+            'custom_loss': self.custom_loss,
+            'custom_caption_loss': self.custom_caption_loss,
+            'custom_image_loss': self.custom_image_loss,
+            'clip_loss': self.clip_loss,
+            'clip_caption_loss': self.clip_caption_loss,
+            'clip_image_loss': self.clip_image_loss,
+            'loss': self.loss
+        }
+
+    def reset_states(self):
+        self.custom_loss.assign(0.)
+        self.custom_caption_loss.assign(0.)
+        self.custom_image_loss.assign(0.)
+        
+        self.clip_loss.assign(0.)
+        self.clip_caption_loss.assign(0.)
+        self.clip_image_loss.assign(0.)
+        
+        self.loss.assign(0.)
 
 def get_clip_model(
     image_input_shape,
@@ -256,6 +679,8 @@ class CLIP_fusion(tf.keras.Model):
     def train_step(self, data):
         # Unpack the data. Its structure depends on your model and
         # on what you pass to `fit()`.
+
+        return_dict = False
         imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
 
         with tf.GradientTape() as tape:
@@ -269,6 +694,11 @@ class CLIP_fusion(tf.keras.Model):
                 text_projector, image_projector, regularization_losses=self.losses
             )
 
+            if isinstance(loss, dict):
+                loss_dict = loss
+                loss = loss_dict['loss']
+                return_dict = True
+
             # Compute gradients
             trainable_vars = self.trainable_variables
             gradients = tape.gradient(loss, trainable_vars)
@@ -276,7 +706,7 @@ class CLIP_fusion(tf.keras.Model):
             self.optimizer.apply_gradients(zip(gradients, trainable_vars))
             # Update metrics (includes the metric that tracks the loss)
             # Return a dict mapping metric names to current value
-            return {"loss": loss}
+            return {"loss": loss} if not return_dict else loss_dict
 
     def test_step(self, data):
         # Unpack the data
@@ -290,7 +720,14 @@ class CLIP_fusion(tf.keras.Model):
             text_projector, image_projector, regularization_losses=self.losses
         )
         # Update the metrics.
-        return {"loss": loss}
+        return_dict = False
+        if isinstance(loss, dict):
+            loss_dict = loss
+            loss = loss_dict['loss']
+            return_dict = True
+
+    
+        return {"loss": loss} if not return_dict else loss_dict
 
     def predict_step(self, data):
         imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
@@ -309,6 +746,91 @@ class CLIP_fusion(tf.keras.Model):
 
         return text_embeds, image_embeds
 
+class CLIP_fusion_with_custom_metric(tf.keras.Model):
+    def __init__(self,custom_metric_tracker, *args, **kwargs):
+        super(CLIP_fusion_with_custom_metric, self).__init__(*args, **kwargs)
+        self.loss_tracker = tf.keras.metrics.Mean(name='loss')
+        self.custom_metric_tracker = custom_metric_tracker
+
+    def train_step(self, data):
+        # Unpack the data. Its structure depends on your model and
+        # on what you pass to `fit()`.
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+
+        with tf.GradientTape() as tape:
+            text_projector, image_projector = self(
+                [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=True
+            )  # Forward pass
+            # Compute the loss value
+            # (the loss function is configured in `compile()`)
+
+            loss = self.compute_loss(text_projector, image_projector)
+
+        # Compute gradients
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+
+        # Update metrics (includes the metric that tracks the loss)
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss)
+            else:
+                metric.update_state(text_projector, image_projector)
+
+        # Return a dict mapping metric names to current value
+        results = {}
+        for m in self.metrics:
+            res = m.result()
+
+            if isinstance(res,dict):
+                results.update(res)
+            else:
+                results[m.name] = res
+
+
+        return results
+
+    def test_step(self, data):
+        # Unpack the data
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+        # Compute predictions
+        text_projector, image_projector = self(
+            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+        )  # Forward pass
+        # Updates the metrics tracking the loss
+        loss = self.compute_loss(text_projector, image_projector)
+         # Update metrics (includes the metric that tracks the loss)
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss)
+            else:
+                metric.update_state(text_projector, image_projector)
+        # Return a dict mapping metric names to current value
+        results = {}
+        for m in self.metrics:
+            res = m.result()
+
+            if isinstance(res,dict):
+                results.update(res)
+            else:
+                results[m.name] = res
+
+    def compute_loss(self, text_projector, image_projector):
+        loss = self.compiled_loss(
+            text_projector, image_projector, regularization_losses=self.losses
+        )
+        self.loss_tracker.update_state(loss)
+        return loss   
+
+    def reset_metrics(self):
+        self.loss_tracker.reset_states()
+        self.custom_metric_tracker.reset_states()
+
+    @property
+    def metrics(self):
+        return [self.loss_tracker, self.custom_metric_tracker]
 
 class CLIP_base(tf.keras.Model):
     def train_step(self, data):
