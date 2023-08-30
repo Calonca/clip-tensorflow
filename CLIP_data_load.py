@@ -308,8 +308,8 @@ def concepts_to_str(df, expand_med_acronyms=True):
 def paths_captions_concepts_emb_list(df, 
                             all_images_path, 
                             tokenizer,
-                            max_len_concepts, 
-                            max_len_captions,
+                            max_len_concepts=80, 
+                            max_len_captions=128,
                             remove_images_threshold=None):
     imagesAndLabels = []
     df['caption'] = df['caption'].apply(lambda x:str(x))
