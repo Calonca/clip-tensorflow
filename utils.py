@@ -82,7 +82,6 @@ def get_captions_word_occurrences(df):
 
 
 
-
 def print_metric(df,num_classes):
     # make a list of the most common concepts to use as labels
     concepts_l = df.concepts.to_list()

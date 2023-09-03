@@ -1,5 +1,10 @@
 import tensorflow as tf
 
+import utils
+import CLIP_data_load
+import numpy as np
+from sklearn.metrics import accuracy_score
+
 ## Loss
 def tf_categorical_cross_entropy(y_true, logits):
     return tf.math.reduce_mean(
@@ -83,7 +88,7 @@ def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
 
 
 def get_hybrid_loss(
-    temperature_base_loss=None, 
+    temperature_base_loss=0.5, 
     temperature_custom_loss=0.5,
     weight:float=0.5,
     verbose_clip_loss=False,
@@ -112,7 +117,7 @@ def get_hybrid_loss(
             else:
                 cu_loss = custom_loss(text_embeds, image_embeds, temperature_custom_loss)
 
-            hybrid_loss = c_loss * cu_loss
+            hybrid_loss = weight*c_loss + (1-weight)*cu_loss
 
             losses_dict['hybrid_loss'] = hybrid_loss
 
@@ -400,3 +405,86 @@ class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
         self.clip_image_loss.assign(0.)
         
         self.loss.assign(0.)
+
+
+def embed_img(batch_img):
+  text_zeros = tf.zeros([batch_img.shape[0],200])
+  return embed(batch_img,text_zeros,text_zeros)[1]
+
+def embed_txt(batch_ids_1,batch_att_1, batch_ids_2,batch_att_2):
+  
+  image_zeros = tf.zeros([batch_ids_1.shape[0],batch_ids_1.shape[1], batch_ids_1.shape[1],3])
+  return embed(image_zeros,batch_ids_1,batch_att_1, batch_ids_2,batch_att_2)[0]
+
+def embed(model, batch_img, batch_ids_1,batch_att_1, batch_ids_2,batch_att_2):
+    e_txt,e_img = model.predict_step((batch_img,batch_ids_2,batch_att_2, batch_ids_1,batch_att_1))
+    return e_txt.numpy(),e_img.numpy()
+
+"""Returns tokenized labels and one hot encoded labels"""
+def build_zero_shot_metric(df,
+                           tokenizer,
+                           max_len_concepts,
+                           max_len_captions,
+                           preceding_caption,num_classes=10):
+    labels = utils.common_concepts_covering_all_dataset(df, return_occurrences=False)
+
+    if num_classes==None:
+        num_classes = len(labels)
+
+    # one hot encode labels
+    zs_labels = df.concepts.apply(lambda x: utils.one_hot_encode(x,labels,num_classes))
+
+    labels = [preceding_caption+label for label in labels]
+    
+    zs_concepts = CLIP_data_load.construct_encoding(labels,tokenizer, max_len_concepts, return_tensors="tf")
+    zs_concepts_as_caps = CLIP_data_load.construct_encoding(labels,tokenizer, max_len_captions, return_tensors="tf")
+    return zs_concepts,zs_concepts_as_caps, zs_labels
+
+
+
+class ZeroShotSingleLabelCallBack(tf.keras.callbacks.Callback):
+
+    """similarity_treshold is an hyperparameter.
+    Images that have similarity higher then the treshold will belong to the class"""
+    def __init__(self, 
+                 model, 
+                 val_gen,
+                 zs_concepts,
+                 zs_concepts_as_caps, 
+                 zs_labels, 
+                 wandb,
+                 similarity_treshold = 0.02):
+        self.zs_concepts = zs_concepts
+        self.zs_concepts_as_caps = zs_concepts_as_caps
+        self.zs_labels = zs_labels
+        self.similarity_treshold = similarity_treshold
+        self.model = model
+        self.val_gen = val_gen
+        self.wandb = wandb
+
+    def on_epoch_end(self, epoch):
+        label_e_txt = embed_txt(self.zs_concepts['input_ids'],self.zs_concepts['attention_mask'],
+                                self.zs_concepts_as_caps['input_ids'],self.zs_concepts_as_caps['attention_mask']
+                               
+                               )
+        #e_img is the prediction over the whole validation set using model.predict
+        val_e_txt, val_e_img = self.model.predict(self.val_gen)
+
+        #compute similarity between each image and label
+        similarities = np.dot(val_e_img,label_e_txt.T)
+        one_hot_labels = np.vstack(np.array(self.zs_labels))
+        #remove fourth class
+
+        print(similarities[0])
+        print(one_hot_labels[0])
+
+        similarities[similarities < self.similarity_treshold] = 0
+        similarities[similarities >= self.similarity_treshold] = 1
+        
+
+        #Multi class accuracy
+        acc_score = accuracy_score(one_hot_labels[:9856], similarities)
+
+        # return e_txt.numpy(),e_img.numpy()
+        self.wandb.log({"zero_shot_accuracy":acc_score})
+        print("zero_shot_accuracy: ",acc_score)
