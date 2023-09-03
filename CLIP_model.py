@@ -31,6 +31,16 @@ def contrastive_loss(logits):
         )
     )
 
+def c_loss(logits):
+    return tf.math.reduce_mean(
+        tf.keras.metrics.sparse_categorical_crossentropy(  # we use sparse because we have integer labels
+            y_true=tf.range(logits.shape[0]),  # labels from 0 to batch_size
+            y_pred=logits,
+            from_logits=True,
+        )
+    )
+    
+
 
 ## Loss
 def tf_categorical_cross_entropy(y_true, logits):
@@ -69,11 +79,11 @@ def get_hybrid_loss(
                 losses_dict.update(cu_loss_dict)
                 cu_loss = cu_loss_dict['custom_loss']
             else:
-                cu_loss = custom_loss(text_embeds, image_embeds, temperature_base_loss)
+                cu_loss = custom_loss(text_embeds, image_embeds, temperature_custom_loss)
 
             hybrid_loss = c_loss * cu_loss
 
-            losses_dict['loss'] = hybrid_loss
+            losses_dict['hybrid_loss'] = hybrid_loss
 
             return losses_dict
 
@@ -104,8 +114,12 @@ def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
     text_logits = tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
     image_logits = tf.transpose(text_logits)
 
-    caption_loss = contrastive_loss(text_logits)
-    image_loss = contrastive_loss(image_logits)
+    num_logits = image_logits.shape[0]
+
+    labels=tf.range(num_logits)
+
+    caption_loss = tf.math.reduce_mean(tf.keras.metrics.sparse_categorical_crossentropy(y_true=labels, y_pred=text_logits, from_logits=True))
+    image_loss = tf.math.reduce_mean(tf.keras.metrics.sparse_categorical_crossentropy(y_true=labels, y_pred=image_logits, from_logits=True))
 
 
     loss = (caption_loss + image_loss) / 2.0
@@ -152,9 +166,11 @@ def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
         losses_dict['custom_caption_loss'] = img_loss
         losses_dict['custom_image_loss'] = txt_loss
 
+        return losses_dict
+
     return loss
 
-def custom_loss_with_temp(temperature:float):
+def custom_loss_with_temp(temperature:float, verbose=False):
 
     if temperature is None:
         temperature=1.0
@@ -164,27 +180,37 @@ def custom_loss_with_temp(temperature:float):
         """Uses images and text similarities"""
         # image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
         # text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
-
+    
         logits = (
-            tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
-        )  # rows are text and columns are images
-
+                tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
+            )  # rows are text and columns are images
+    
         img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
         txt_sim = tf.matmul(text_embeds, text_embeds, transpose_b=True)
-
+    
         text_true = tf.nn.softmax(
-            ((img_sim + txt_sim) / 2.0) / temperature,
-            axis=1,
-        )
+                ((img_sim + txt_sim) / 2.0) / temperature,
+                axis=1,
+            )
         img_true = tf.nn.softmax(
-            ((img_sim + txt_sim) / 2.0) / temperature,
-            axis=0,
-        )
-
+                ((img_sim + txt_sim) / 2.0) / temperature,
+                axis=0,
+            )
+    
         img_loss = tf_categorical_cross_entropy(img_true, tf.transpose(logits))
         txt_loss = tf_categorical_cross_entropy(text_true, logits)
         loss = (img_loss + txt_loss) / 2.0
+    
+    
+        if verbose:
+            losses_dict = {}
+            losses_dict['custom_loss'] = loss
+            losses_dict['custom_caption_loss'] = img_loss
+            losses_dict['custom_image_loss'] = txt_loss
+
+            return losses_dict
         return loss
+        
     return custom_loss
 
 def loose_loss(text_embeds, image_embeds, temperature=1):
@@ -249,6 +275,12 @@ class ProjectorLayer(tf.keras.layers.Layer):
         x = x + projected
         return self.layer_norm(x)
 
+def t_f():
+    return True
+
+def f_f():
+    return False
+
 def get_clip_fusion_model(
     image_input_shape,
     concepts_input_shape,
@@ -281,21 +313,27 @@ def get_clip_fusion_model(
     concepts_mask_input = tf.keras.Input(shape=concepts_input_shape)
 
     caption_encoding = text_encoder(
-        input_ids=caption_id_input, attention_mask=caption_mask_input
-    ).last_hidden_state
+            input_ids=caption_id_input, attention_mask=caption_mask_input
+        ).last_hidden_state
+    
+    caption_encoding = caption_encoding[:, 0, :]
+
+    non_zero_count = tf.math.reduce_sum(tf.cast(tf.math.not_equal(concepts_id_input, 0), tf.int32))
+    
+    check = tf.cond(tf.equal(non_zero_count, 0), t_f, f_f)
 
     concepts_encoding = text_encoder(
-        input_ids=concepts_id_input, attention_mask=concepts_mask_input
-    ).last_hidden_state
+            input_ids=concepts_id_input, attention_mask=concepts_mask_input
+        ).last_hidden_state
 
-    caption_encoding = caption_encoding[:, 0, :]
     concepts_encoding = concepts_encoding[:, 0, :]
+    text_encoding = tf.concat(values=[caption_encoding, concepts_encoding], axis=1)
 
     image_encoding = image_encoder(image_input)
     # image_encoding = image_encoder(image_input).pooler_output
     # image_encoding = image_encoding[:,:,0,0]
 
-    text_encoding = tf.concat(values=[caption_encoding, concepts_encoding], axis=1)
+    
     """print(caption_encoding)
     print(concepts_encoding)
     print(text_encoding)"""
@@ -321,7 +359,7 @@ def get_clip_fusion_model(
         model = CLIP_fusion_with_custom_metric(
             inputs=[image_input, caption_id_input, caption_mask_input, concepts_id_input, concepts_mask_input],
             outputs=[text_projector, image_projector],
-            custom_metric=custom_metric
+            custom_metric_tracker=custom_metric
         )
 
 
@@ -354,7 +392,7 @@ class MeanMetricClipLoss(tf.keras.metrics.Metric):
         self.clip_loss = self.add_weight(name="clip_loss_sum", initializer="zeros")
         self.clip_caption_loss = self.add_weight(name="clip_caption_loss_sum", initializer="zeros")
         self.clip_image_loss = self.add_weight(name="clip_image_loss_sum", initializer="zeros")
-        self.loss = self.add_weight(name="loss_sum", initializer="zeros")
+        self.loss = self.add_weight(name="hybrid_loss_sum", initializer="zeros")
         self.num_samples = self.add_weight(name="num_samples", initializer="zeros")
 
     def update_state(self, y_true, y_pred, sample_weight=None):
@@ -363,7 +401,7 @@ class MeanMetricClipLoss(tf.keras.metrics.Metric):
         self.clip_loss.assign_add(values['clip_loss'] * batch_size)
         self.clip_caption_loss.assign_add(values['clip_caption_loss'] * batch_size)
         self.clip_image_loss.assign_add(values['clip_image_loss'] * batch_size)
-        self.loss.assign_add(values['loss'] * batch_size)
+        self.loss.assign_add(values['hybrid_loss'] * batch_size)
         self.num_samples.assign_add(batch_size)
 
     def result(self):
@@ -376,7 +414,7 @@ class MeanMetricClipLoss(tf.keras.metrics.Metric):
             'mean_clip_loss': mean_clip_loss,
             'mean_clip_caption_loss': mean_clip_caption_loss,
             'mean_clip_image_loss': mean_clip_image_loss,
-            'mean_loss': mean_loss
+            'mean_hybrid_loss': mean_loss
         }
 
     def reset_states(self):
@@ -395,21 +433,21 @@ class LastValueMetricClipLoss(tf.keras.metrics.Metric):
         self.clip_loss = self.add_weight(name="clip_loss", initializer="zeros")
         self.clip_caption_loss = self.add_weight(name="clip_caption_loss", initializer="zeros")
         self.clip_image_loss = self.add_weight(name="clip_image_loss", initializer="zeros")
-        self.loss = self.add_weight(name="loss", initializer="zeros")
+        self.loss = self.add_weight(name="hybrid_loss", initializer="zeros")
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         values = self.fn(y_true, y_pred)
         self.clip_loss.assign(values['clip_loss'])
         self.clip_caption_loss.assign(values['clip_caption_loss'])
         self.clip_image_loss.assign(values['clip_image_loss'])
-        self.loss.assign(values['loss'])
+        self.loss.assign(values['hybrid_loss'])
 
     def result(self):
         return {
             'clip_loss': self.clip_loss,
             'clip_caption_loss': self.clip_caption_loss,
             'clip_image_loss': self.clip_image_loss,
-            'loss': self.loss
+            'hybrid_loss': self.loss
         }
 
     def reset_states(self):
@@ -427,7 +465,7 @@ class MeanMetricCustomLoss(tf.keras.metrics.Metric):
         self.custom_loss = self.add_weight(name="custom_loss_sum", initializer="zeros")
         self.custom_caption_loss = self.add_weight(name="custom_caption_loss_sum", initializer="zeros")
         self.custom_image_loss = self.add_weight(name="custom_image_loss_sum", initializer="zeros")
-        self.loss = self.add_weight(name="loss_sum", initializer="zeros")
+        self.loss = self.add_weight(name="hybrid_loss", initializer="zeros")
         self.num_samples = self.add_weight(name="num_samples", initializer="zeros")
 
     def update_state(self, y_true, y_pred, sample_weight=None):
@@ -436,7 +474,7 @@ class MeanMetricCustomLoss(tf.keras.metrics.Metric):
         self.custom_loss.assign_add(values['custom_loss'] * batch_size)
         self.custom_caption_loss.assign_add(values['custom_caption_loss'] * batch_size)
         self.custom_image_loss.assign_add(values['custom_image_loss'] * batch_size)
-        self.loss.assign_add(values['loss'] * batch_size)
+        self.loss.assign_add(values['hybrid_loss'] * batch_size)
         self.num_samples.assign_add(batch_size)
 
     def result(self):
@@ -449,7 +487,7 @@ class MeanMetricCustomLoss(tf.keras.metrics.Metric):
             'mean_custom_loss': mean_custom_loss,
             'mean_custom_caption_loss': mean_custom_caption_loss,
             'mean_custom_image_loss': mean_custom_image_loss,
-            'mean_loss': mean_loss
+            'mean_hybrid_loss': mean_loss
         }
 
     def reset_states(self):
@@ -468,21 +506,21 @@ class LastValueMetricCustomLoss(tf.keras.metrics.Metric):
         self.custom_loss = self.add_weight(name="custom_loss", initializer="zeros")
         self.custom_caption_loss = self.add_weight(name="custom_caption_loss", initializer="zeros")
         self.custom_image_loss = self.add_weight(name="custom_image_loss", initializer="zeros")
-        self.loss = self.add_weight(name="loss", initializer="zeros")
+        self.loss = self.add_weight(name="hybrid_loss", initializer="zeros")
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         values = self.fn(y_true, y_pred)
         self.custom_loss.assign(values['custom_loss'])
         self.custom_caption_loss.assign(values['custom_caption_loss'])
         self.custom_image_loss.assign(values['custom_image_loss'])
-        self.loss.assign(values['loss'])
+        self.loss.assign(values['hybrid_loss'])
 
     def result(self):
         return {
             'custom_loss': self.custom_loss,
             'custom_caption_loss': self.custom_caption_loss,
             'custom_image_loss': self.custom_image_loss,
-            'loss': self.loss
+            'hybrid_loss': self.loss
         }
 
     def reset_states(self):
@@ -595,7 +633,7 @@ class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
         self.clip_caption_loss.assign(values['clip_caption_loss'])
         self.clip_image_loss.assign(values['clip_image_loss'])
         
-        self.loss.assign(values['loss'])
+        self.loss.assign(values['hybrid_loss'])
 
     def result(self):
         return {
@@ -605,7 +643,7 @@ class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
             'clip_loss': self.clip_loss,
             'clip_caption_loss': self.clip_caption_loss,
             'clip_image_loss': self.clip_image_loss,
-            'loss': self.loss
+            'hybrid_loss': self.loss
         }
 
     def reset_states(self):
@@ -678,8 +716,6 @@ class CLIP_fusion(tf.keras.Model):
     def train_step(self, data):
         # Unpack the data. Its structure depends on your model and
         # on what you pass to `fit()`.
-
-        return_dict = False
         imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
 
         with tf.GradientTape() as tape:
@@ -692,12 +728,6 @@ class CLIP_fusion(tf.keras.Model):
             loss = self.compiled_loss(
                 text_projector, image_projector, regularization_losses=self.losses
             )
-
-            if isinstance(loss, dict):
-                loss_dict = loss
-                loss = loss_dict['loss']
-                return_dict = True
-
             # Compute gradients
             trainable_vars = self.trainable_variables
             gradients = tape.gradient(loss, trainable_vars)
@@ -705,7 +735,7 @@ class CLIP_fusion(tf.keras.Model):
             self.optimizer.apply_gradients(zip(gradients, trainable_vars))
             # Update metrics (includes the metric that tracks the loss)
             # Return a dict mapping metric names to current value
-            return {"loss": loss} if not return_dict else loss_dict
+            return {"loss": loss}
 
     def test_step(self, data):
         # Unpack the data
@@ -719,23 +749,24 @@ class CLIP_fusion(tf.keras.Model):
             text_projector, image_projector, regularization_losses=self.losses
         )
         # Update the metrics.
-        return_dict = False
-        if isinstance(loss, dict):
-            loss_dict = loss
-            loss = loss_dict['loss']
-            return_dict = True
 
     
-        return {"loss": loss} if not return_dict else loss_dict
+        return {"loss": loss}
 
     def predict_step(self, data):
-        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
 
-        # Compute predictions
-        text_embeds, image_embeds = self(
-            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
-        )  # Forward pass
+        if len(data)== 3:
+            imgs, caption_ids, caption_masks = data[0], data[1], data[2]
+            text_embeds, image_embeds = self(
+                [imgs, caption_ids, caption_masks, None, None], training=False
+            )  # Forward pass
+        else: 
+            imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
 
+            text_embeds, image_embeds = self(
+                [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+            )  # Forward pass
+        
         image_embeds = image_embeds / tf.norm(
             tensor=image_embeds, ord="euclidean", axis=-1, keepdims=True
         )
@@ -750,6 +781,7 @@ class CLIP_fusion_with_custom_metric(tf.keras.Model):
         super(CLIP_fusion_with_custom_metric, self).__init__(*args, **kwargs)
         self.loss_tracker = tf.keras.metrics.Mean(name='loss')
         self.custom_metric_tracker = custom_metric_tracker
+        self.reduced_input = False
 
     def train_step(self, data):
         # Unpack the data. Its structure depends on your model and
@@ -819,17 +851,29 @@ class CLIP_fusion_with_custom_metric(tf.keras.Model):
         return results
 
     def predict_step(self, data):
-        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
 
-        text_embeds, image_embeds = self(
-            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
-        )  # Forward pass
+        if len(data) == 3:
+            self.reduce_input = True
+            imgs, caption_ids, caption_masks = data[0], data[1], data[2]
+
+            text_embeds, image_embeds = self(
+                [imgs, caption_ids, caption_masks, tf.zeros_like(self.input_shape[-1]),tf.zeros_like(self.input_shape[-1])], training=False
+            )  # Forward pass
+        else: 
+            imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+
+            text_embeds, image_embeds = self(
+                [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+            )  # Forward pass
+        
         image_embeds = image_embeds / tf.norm(
             tensor=image_embeds, ord="euclidean", axis=-1, keepdims=True
         )
         text_embeds = text_embeds / tf.norm(
             tensor=text_embeds, ord="euclidean", axis=-1, keepdims=True
         )
+
+        self.reduce_input = False
 
         return text_embeds, image_embeds
 
