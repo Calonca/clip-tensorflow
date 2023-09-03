@@ -87,10 +87,6 @@ def get_clip_fusion_model(
     
     caption_encoding = caption_encoding[:, 0, :]
 
-    non_zero_count = tf.math.reduce_sum(tf.cast(tf.math.not_equal(concepts_id_input, 0), tf.int32))
-    
-    check = tf.cond(tf.equal(non_zero_count, 0), t_f, f_f)
-
     concepts_encoding = text_encoder(
             input_ids=concepts_id_input, attention_mask=concepts_mask_input
         ).last_hidden_state
@@ -99,22 +95,12 @@ def get_clip_fusion_model(
     text_encoding = tf.concat(values=[caption_encoding, concepts_encoding], axis=1)
 
     image_encoding = image_encoder(image_input)
-    # image_encoding = image_encoder(image_input).pooler_output
-    # image_encoding = image_encoding[:,:,0,0]
-
-    
-    """print(caption_encoding)
-    print(concepts_encoding)
-    print(text_encoding)"""
 
     text_projector_name = "text_projector"
     image_projector_name = "image_projector"
 
     text_projector = ProjectorLayer(latent_dim_text, latent_dim_common, projector_dropout_rate, name=text_projector_name)(text_encoding)
     image_projector = ProjectorLayer(latent_dim_imgs, latent_dim_common, projector_dropout_rate, name=image_projector_name)(image_encoding)
-
-    """print(text_projector)
-    print(image_projector)"""
 
     image_projector = tf.squeeze(image_projector)
 
@@ -147,7 +133,6 @@ def get_clip_fusion_model(
         ]
     
     optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
-    #optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
 
     return model
@@ -161,6 +146,7 @@ def get_clip_model(
     latent_dim_text,
     latent_dim_common,
     train_bert=False,
+    projector_dropout_rate=0.1,
     learning_rate=1e-5,
     loss=clip_loss,
     custom_metric = None
@@ -182,11 +168,12 @@ def get_clip_model(
 
     text_encoding = text_encoding[:, 0, :]
     image_encoding = image_encoder(image_input)
-    # image_encoding = image_encoder(image_input).pooler_output
-    # image_encoding = image_encoding[:,:,0,0]
 
-    text_projector = get_projector(text_encoding, latent_dim_text, latent_dim_common)
-    image_projector = get_projector(image_encoding, latent_dim_imgs, latent_dim_common)
+    text_projector_name = "text_projector"
+    image_projector_name = "image_projector"
+
+    text_projector = ProjectorLayer(latent_dim_text, latent_dim_common, projector_dropout_rate, name=text_projector_name)(text_encoding)
+    image_projector = ProjectorLayer(latent_dim_imgs, latent_dim_common, projector_dropout_rate, name=image_projector_name)(image_encoding)
 
     image_projector = tf.squeeze(image_projector)
 
@@ -199,7 +186,7 @@ def get_clip_model(
         model = CLIP_with_custom_metric(
             inputs=[image_input, text_id_input, text_mask_input],
             outputs=[text_projector, image_projector],
-            custom_metric=custom_metric
+            custom_metric_tracker=custom_metric
         )
     
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
