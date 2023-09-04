@@ -1,34 +1,11 @@
-import os
 import tensorflow as tf
-import numpy as np
-import random
-import pandas as pd
-import matplotlib as mpl
-from transformers import BertConfig, BertTokenizer, BertModel
-import matplotlib.pyplot as plt
-from keras.callbacks import *
-import random
-from keras import backend as K
-from PIL import Image
-import shutil
-import scipy
-from tqdm import tqdm
-import albumentations as A
 import tensorflow_addons as tfa
 from train_utils import *
+from keras.optimizers import Adam
 
 # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 tfk = tf.keras
 tfkl = tf.keras.layers
-
-# Utils
-def get_projector(x, latent_dim, output_dim, dropout_rate):
-    projected = tf.keras.layers.Dense(output_dim, activation="gelu")(x)
-    x = tf.keras.layers.Dense(output_dim, activation="linear")(projected)
-    x = tf.keras.layers.Dropout(dropout_rate)(x)
-    x = x+projected
-    x = tf.keras.layers.LayerNormalization()(x)
-    return x
 
 class ProjectorLayer(tf.keras.layers.Layer):
     def __init__(self, latent_dim, output_dim, dropout_rate, **kwargs):
@@ -65,7 +42,7 @@ def get_clip_fusion_model(
     custom_metric = None,
     lr_image_encoder = 1e-4,
     lr_text_encoder = 1e-5,
-    lr_head = 1e-3
+    lr_projector = 1e-3
 )->tf.keras.Model:
     """Return a CLIP model
 
@@ -117,21 +94,13 @@ def get_clip_fusion_model(
             custom_metric_tracker=custom_metric
         )
 
-
-    image_encoder_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_image_encoder)
-    text_encoder_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_text_encoder)
-    text_head_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_head)
-    image_head_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_head)
-
-    optimizers = [image_encoder_optimizer,text_encoder_optimizer, text_head_optimizer, image_head_optimizer]
-
     optimizers_and_layers = [
-        (optimizers[0], model.get_layer(image_encoder.name)), 
-        (optimizers[1], model.get_layer(text_encoder.name)),
-        (optimizers[2], model.get_layer(text_projector_name)),
-        (optimizers[3], model.get_layer(image_projector_name))
+        (Adam(learning_rate=lr_image_encoder), model.get_layer(image_encoder.name)), 
+        (Adam(learning_rate=lr_text_encoder), model.get_layer(text_encoder.name)),
+        (Adam(learning_rate=lr_projector), model.get_layer(text_projector_name)),
+        (Adam(learning_rate=lr_projector), model.get_layer(image_projector_name))
         ]
-    
+
     optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
     model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
 
@@ -147,7 +116,9 @@ def get_clip_model(
     latent_dim_common,
     train_bert=False,
     projector_dropout_rate=0.1,
-    learning_rate=1e-5,
+    lr_image_encoder = 1e-4,
+    lr_text_encoder = 1e-5,
+    lr_projector = 1e-3,
     loss=clip_loss,
     custom_metric = None
 )->tf.keras.Model:
@@ -188,8 +159,16 @@ def get_clip_model(
             outputs=[text_projector, image_projector],
             custom_metric_tracker=custom_metric
         )
+
+    optimizers_and_layers = [
+        (Adam(learning_rate=lr_image_encoder), model.get_layer(image_encoder.name)), 
+        (Adam(learning_rate=lr_text_encoder), model.get_layer(text_encoder.name)),
+        (Adam(learning_rate=lr_projector), model.get_layer(text_projector_name)),
+        (Adam(learning_rate=lr_projector), model.get_layer(image_projector_name))
+        ]
+
+    optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
     
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     model.compile(loss=loss, optimizer=optimizer, run_eagerly=True)
 
     return model

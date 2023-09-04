@@ -37,16 +37,11 @@ def to_lowercase(set_concepts):
 
 def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = None):
     df1 = df.copy()
-    df2 = df.copy()
-
 
     # df.concepts = df.concepts.apply(to_lowercase)
     # make a list of the most common concepts to use as labels
     concepts_l = df.concepts.to_list()
     concepts = [item.lower() for sublist in concepts_l for item in sublist]
-
-
-
 
     concepts_freq = Counter(concepts)
 
@@ -57,7 +52,7 @@ def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = N
 
     concepts_freq = concepts_freq.most_common(num_classes)
 
-    #for ech concept add most common concept to list and remove from df until all row are covered
+    #for each concept add most common concept to list and remove from df until all row are covered
     concepts_covering_all_dataset = []
     df_len_before_removing = len(df)
 
