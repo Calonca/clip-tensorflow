@@ -568,7 +568,6 @@ class ZeroShotSingleLabelCallBack(tf.keras.callbacks.Callback):
         acc_score = accuracy_score(one_hot_labels, similarities)
 
         # return e_txt.numpy(),e_img.numpy()
-        # self.logger.log({"zero_shot_accuracy": acc_score})
+        self.logger.log({"zero_shot_accuracy": acc_score})
         metrics["zero_shot_accuracy"] = acc_score #
-        # return metrics
-        # print("zero_shot_accuracy: ", acc_score)
+
