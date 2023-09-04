@@ -35,18 +35,13 @@ def len_duplicate_caption(df):
 def to_lowercase(set_concepts):
     return {c.lower() for c in set_concepts}
 
-def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = None):
+def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = None, topk=None):
     df1 = df.copy()
-    df2 = df.copy()
-
 
     # df.concepts = df.concepts.apply(to_lowercase)
     # make a list of the most common concepts to use as labels
     concepts_l = df.concepts.to_list()
     concepts = [item.lower() for sublist in concepts_l for item in sublist]
-
-
-
 
     concepts_freq = Counter(concepts)
 
@@ -61,7 +56,10 @@ def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = N
     concepts_covering_all_dataset = []
     df_len_before_removing = len(df)
 
-    for concept in concepts_freq:
+    if topk is None:
+        topk = len(concepts_freq)
+
+    for concept in concepts_freq[:topk]:
 
         df1 = df1[~df1['concepts'].apply(lambda x: concept[0] in x)]#remove rows containing concept
 
@@ -69,6 +67,8 @@ def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = N
         df_len_before_removing = len(df)
         if len(df) == 0:
             break
+    
+    return concepts_covering_all_dataset
 
 def get_captions_word_occurrences(df):
 

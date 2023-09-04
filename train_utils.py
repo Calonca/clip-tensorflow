@@ -425,8 +425,9 @@ def build_zero_shot_metric(df,
                            tokenizer,
                            max_len_concepts,
                            max_len_captions,
-                           preceding_caption,num_classes=10):
-    labels = utils.common_concepts_covering_all_dataset(df, return_occurrences=False)
+                           preceding_caption,
+                           num_classes=10):
+    labels = utils.common_concepts_covering_all_dataset(df, return_occurrences=False, topk = num_classes)
 
     if num_classes==None:
         num_classes = len(labels)
