@@ -92,8 +92,8 @@ class FusionGenerator(tf.keras.utils.Sequence):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.augment = augment
-        self.seed = seed
         self.channels_first = channels_first
+        self.model_version = model_version
 
     def __len__(self):
         return len(self.data) // self.batch_size
