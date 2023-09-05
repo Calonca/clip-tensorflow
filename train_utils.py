@@ -4,7 +4,21 @@ import utils
 import CLIP_data_load
 import numpy as np
 from sklearn.metrics import accuracy_score
+from wandb.keras import WandbCallback
 
+
+checkpoint_fun = lambda filename: tf.keras.callbacks.ModelCheckpoint(filename, 
+                    monitor="val_loss", mode="min", 
+                    save_best_only=True, verbose=1)
+
+early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=False)
+
+wandb_callback_fun = lambda gen: WandbCallback(
+    monitor='loss',
+    log_batch_frequency=10,
+    save_model = False,
+    validation_steps=len(gen),
+)
 
 ## Loss
 def tf_categorical_cross_entropy(y_true, logits):

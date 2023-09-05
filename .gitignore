@@ -4,3 +4,4 @@ dataset/resized_train/
 wandb/
 weights/
 artifacts/
+.vscode/
