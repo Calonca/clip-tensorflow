@@ -492,12 +492,12 @@ class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
 
 
 """Returns tokenized labels and one hot encoded labels"""
-def build_zero_shot_metric(df,
-                           tokenizer,
-                           max_len_concepts,
-                           max_len_captions,
-                           preceding_caption,num_classes=10):
-    labels = utils.common_concepts_covering_all_dataset(df, return_occurrences=False)
+
+
+def build_zero_shot_metric(
+    df, tokenizer, max_len_concepts, max_len_captions, preceding_caption, num_classes=10
+):
+    labels, weights = utils.get_most_common_labels(df, num_classes=num_classes)
 
     # one hot encode labels
     zs_labels = df.concepts.apply(
@@ -570,5 +570,3 @@ class ZeroShotSingleLabelCallBack(tf.keras.callbacks.Callback):
         # return e_txt.numpy(),e_img.numpy()
         self.logger.log({"zero_shot_accuracy": acc_score})
         metrics["zero_shot_accuracy"] = acc_score #
-
-
