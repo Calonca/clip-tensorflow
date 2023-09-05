@@ -464,10 +464,7 @@ class ZeroShotSingleLabelCallBack(tf.keras.callbacks.Callback):
         self.wandb = wandb
 
     def on_epoch_end(self, epoch):
-        label_e_txt = embed_txt(self.zs_concepts['input_ids'],self.zs_concepts['attention_mask'],
-                                self.zs_concepts_as_caps['input_ids'],self.zs_concepts_as_caps['attention_mask']
-                               
-                               )
+        label_e_txt = embed_txt(self.zs_concepts['input_ids'],self.zs_concepts['attention_mask'], self.zs_concepts_as_caps['input_ids'],self.zs_concepts_as_caps['attention_mask'])
         #e_img is the prediction over the whole validation set using model.predict
         val_e_txt, val_e_img = self.model.predict(self.val_gen)
 
