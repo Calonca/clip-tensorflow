@@ -52,7 +52,7 @@ def common_concepts_covering_all_dataset(df,num_classes, concepts_to_exclude = N
 
     concepts_freq = concepts_freq.most_common(num_classes)
 
-    #for ech concept add most common concept to list and remove from df until all row are covered
+    #for each concept add most common concept to list and remove from df until all row are covered
     concepts_covering_all_dataset = []
     df_len_before_removing = len(df)
 
