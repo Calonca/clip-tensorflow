@@ -1,5 +1,4 @@
 import os
-
 import cv2
 import nltk
 import numpy as np
@@ -40,7 +39,6 @@ class ClipBaseGenerator(tf.keras.utils.Sequence):
     self.batch_size = batch_size
     self.shuffle = shuffle
     self.augment = augment
-    self.seed = seed
     self.channels_first = channels_first
 
   def __len__(self):
