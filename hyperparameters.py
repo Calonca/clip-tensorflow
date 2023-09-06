@@ -14,4 +14,4 @@ SEED = 116
 img_shape = (128, 128, 3)
 captions_input_shape = (128,)
 concepts_input_shape = (80,)
-zs_num_classes = 4  # number of classes to classify for zero shot learning
+zs_num_classes = 8  # number of classes to classify for zero shot learning
