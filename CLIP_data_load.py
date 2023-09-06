@@ -47,7 +47,9 @@ words_to_exclude = [
 ]
 
 
-def preprocess_captions_concepts(captionsDF, concept_id_df, concept_df):
+def preprocess_captions_concepts(
+    captionsDF, concept_id_df, concept_df
+):
     # Merges captions with concepts files in a single dataframe
     concepts = concept_df.set_index("concept").T.to_dict("list")
     concept_id_df.cuis = concept_id_df.cuis.apply(lambda x: x.split(";"))
@@ -60,7 +62,17 @@ def preprocess_captions_concepts(captionsDF, concept_id_df, concept_df):
 
     # Preprocess captions and concepts
     merged_df = captions_clean(merged_df, words_to_remove=words_to_exclude)
+
     return merged_df
+
+
+def remove_dark_images(df, all_images_path, remove_images_threshold=None):
+    return df [
+        df.ID.apply(
+            lambda id: (remove_images_threshold is None)
+            or (cv2.imread(all_images_path + id, 0).sum() > remove_images_threshold) #image is brighter than threshold
+        )
+    ]
 
 
 class FusionGenerator(tf.keras.utils.Sequence):
@@ -82,7 +94,7 @@ class FusionGenerator(tf.keras.utils.Sequence):
         shuffle=False,
         augment=False,
         channels_first=False,
-        model_version="fusion"
+        model_version="fusion",
     ):
         self.data = data
         self.indices = np.arange(len(self.data))
@@ -350,8 +362,7 @@ def paths_captions_concepts_emb_list(
     all_images_path,
     tokenizer,
     max_len_concepts=80,
-    max_len_captions=128,
-    remove_images_threshold=None,
+    max_len_captions=128
 ):
     imagesAndLabels = []
     df["caption"] = df["caption"].apply(lambda x: str(x))
@@ -359,45 +370,37 @@ def paths_captions_concepts_emb_list(
     for index, row in tqdm(df.iterrows(), total=df.shape[0]):
         concepts_str = concepts_to_str(row.concepts, expand_med_acronyms=True)
 
-        load_image = (remove_images_threshold is None) or (
-            cv2.imread(all_images_path + row.ID, 0).sum() > remove_images_threshold
-        )
-        if load_image:
-            pair = {
-                "path": all_images_path + row.ID,
-                "caption": row.caption,
-                "concepts": concepts_str,
-                "caption_encoding": construct_encoding(
-                    row.caption, tokenizer, max_len_captions
-                ),
-                "concepts_encoding": construct_encoding(
-                    row.caption, tokenizer, max_len_concepts
-                ),
-            }
+        pair = {
+            "path": all_images_path + row.ID,
+            "caption": row.caption,
+            "concepts": concepts_str,
+            "caption_encoding": construct_encoding(
+                row.caption, tokenizer, max_len_captions
+            ),
+            "concepts_encoding": construct_encoding(
+                row.caption, tokenizer, max_len_concepts
+            ),
+        }
 
-            imagesAndLabels.append(pair)
+        imagesAndLabels.append(pair)
 
     return imagesAndLabels
 
 
 # Preprocessing function that creates images and labels pairs
 def paths_captions_emb_list(
-    df, all_images_path, tokenizer, max_len, remove_images_threshold=None
+    df, all_images_path, tokenizer, max_len
 ):
     imagesAndLabels = []
     df["caption"] = df["caption"].apply(lambda x: str(x))
     df["ID"] = df["ID"].apply(lambda x: str(x))
     for index, row in tqdm(df.iterrows(), total=df.shape[0]):
-        load_image = (remove_images_threshold is None) or (
-            cv2.imread(all_images_path + row.ID, 0).sum() > remove_images_threshold
-        )
-        if load_image:
-            pair = {
-                "path": all_images_path + row.ID,
-                "caption": row.caption,
-                "encoding": construct_encoding(row.caption, tokenizer, max_len),
-            }
+        pair = {
+            "path": all_images_path + row.ID,
+            "caption": row.caption,
+            "encoding": construct_encoding(row.caption, tokenizer, max_len),
+        }
 
-            imagesAndLabels.append(pair)
+        imagesAndLabels.append(pair)
 
     return imagesAndLabels
