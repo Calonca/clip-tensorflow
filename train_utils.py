@@ -73,7 +73,7 @@ def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
 
 
 def custom_loss_with_temp(temp=1):
-    return lambda text_embeds, image_embeds, verbose : custom_loss(text_embeds, image_embeds, temp, verbose)
+    return lambda text_embeds, image_embeds, verbose=False : custom_loss(text_embeds, image_embeds, temp, verbose)
 
 """Returns the our loss function with a given temperature"""
 def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
