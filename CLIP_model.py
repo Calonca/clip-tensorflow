@@ -18,14 +18,13 @@ class ProjectorLayer(tf.keras.layers.Layer):
         self.dense_gelu = tf.keras.layers.Dense(self.output_dim, activation="gelu")
         self.dense_linear = tf.keras.layers.Dense(self.output_dim, activation="linear")
         self.dropout = tf.keras.layers.Dropout(self.dropout_rate)
-        self.layer_norm = tf.keras.layers.LayerNormalization()
 
     def call(self, inputs):
         projected = self.dense_gelu(inputs)
         x = self.dense_linear(projected)
         x = self.dropout(x)
         x = x + projected
-        return self.layer_norm(x)
+        return x
 
 def get_clip_fusion_model(
     image_input_shape,
