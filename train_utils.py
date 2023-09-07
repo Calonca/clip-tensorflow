@@ -28,6 +28,8 @@ def tf_categorical_cross_entropy(y_true, logits):
         )
     )
 
+def clip_loss_with_temp(temp):
+    return lambda txt,img,verbose=False: clip_loss(txt,img,temp,verbose)
 
 def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
     if temperature is None:
@@ -119,47 +121,36 @@ def get_hybrid_loss(
     verbose_clip_loss=False,
     verbose_custom_loss=False,
 ):
-    def hybrid_loss(text_embeds, image_embeds):
+    def hybrid_loss_fun(text_embeds, image_embeds):
         # return c_loss + (1-weight)*cu_loss
+        losses_dict = {}
+        c_loss = clip_loss(
+            text_embeds, image_embeds, temperature_base_loss, verbose_clip_loss
+        )
+        if verbose_clip_loss:
+            losses_dict.update(c_loss)
+            c_loss = c_loss["clip_loss"]
+
+        cu_loss = custom_loss(
+            text_embeds,
+            image_embeds,
+            temperature_custom_loss,
+            verbose_custom_loss,
+        )
+        if verbose_custom_loss:
+            losses_dict.update(cu_loss)
+            cu_loss = cu_loss["custom_loss"]
+
+        hybrid_loss = weight * c_loss + (1 - weight) * cu_loss
+
+        losses_dict["hybrid_loss"] = hybrid_loss
+
         if verbose_clip_loss or verbose_custom_loss:
-            losses_dict = {}
-
-            if verbose_clip_loss:
-                c_loss_dict = clip_loss(
-                    text_embeds, image_embeds, temperature_base_loss, verbose_clip_loss
-                )
-                losses_dict.update(c_loss_dict)
-                c_loss = c_loss_dict["clip_loss"]
-            else:
-                c_loss = clip_loss(text_embeds, image_embeds, temperature_base_loss)
-
-            if verbose_custom_loss:
-                cu_loss_dict = custom_loss(
-                    text_embeds,
-                    image_embeds,
-                    temperature_base_loss,
-                    verbose_custom_loss,
-                )
-                losses_dict.update(cu_loss_dict)
-                cu_loss = cu_loss_dict["custom_loss"]
-            else:
-                cu_loss = custom_loss(
-                    text_embeds, image_embeds, temperature_custom_loss
-                )
-
-            hybrid_loss = weight * c_loss + (1 - weight) * cu_loss
-
-            losses_dict["hybrid_loss"] = hybrid_loss
-
             return losses_dict
-
         else:
-            c_loss = clip_loss(text_embeds, image_embeds, temperature_base_loss)
-            cu_loss = custom_loss(text_embeds, image_embeds, temperature_custom_loss)
+            return hybrid_loss
 
-            return c_loss * cu_loss
-
-    return hybrid_loss
+    return hybrid_loss_fun
 
 
 class MeanMetricClipLoss(tf.keras.metrics.Metric):
@@ -214,16 +205,11 @@ class MeanMetricClipLoss(tf.keras.metrics.Metric):
 
 
 class LastValueMetricClipLoss(tf.keras.metrics.Metric):
-    def __init__(self, name=None, **kwargs):
+    def __init__(self, fn, name=None, **kwargs):
         if name is None:
             name = "last_value_metric"
         super(LastValueMetricClipLoss, self).__init__(name=name, **kwargs)
-        self.fn = get_hybrid_loss(
-            temperature_base_loss=0.8,
-            temperature_custom_loss=0.5,
-            weight=0.25,
-            verbose_clip_loss=True,
-        )
+        self.fn = fn
         self.clip_loss = self.add_weight(name="clip_loss", initializer="zeros")
         self.clip_caption_loss = self.add_weight(
             name="clip_caption_loss", initializer="zeros"
@@ -307,16 +293,9 @@ class MeanMetricCustomLoss(tf.keras.metrics.Metric):
 
 
 class LastValueMetricCustomLoss(tf.keras.metrics.Metric):
-    def __init__(self, name=None, **kwargs):
-        if name is None:
-            name = "last_value_metric"
-        super(LastValueMetricCustomLoss, self).__init__(name=name, **kwargs)
-        self.fn = get_hybrid_loss(
-            temperature_base_loss=0.8,
-            temperature_custom_loss=0.5,
-            weight=0.25,
-            verbose_custom_loss=True,
-        )
+    def __init__(self, fn=None, name="last_value_metric", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.fn = fn
         self.custom_loss = self.add_weight(name="custom_loss", initializer="zeros")
         self.custom_caption_loss = self.add_weight(
             name="custom_caption_loss", initializer="zeros"
@@ -436,18 +415,9 @@ class MeanMetricCombinedLoss(tf.keras.metrics.Metric):
 
 
 class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
-    def __init__(self, name=None, **kwargs):
-        if name is None:
-            name = "last_value_metric_combined"
-        super(LastValueMetricCombinedLoss, self).__init__(name=name, **kwargs)
-        self.fn = get_hybrid_loss(
-            temperature_base_loss=0.8,
-            temperature_custom_loss=0.5,
-            weight=0.25,
-            verbose_custom_loss=True,
-            verbose_clip_Loss=True,
-        )
-
+    def __init__(self,fn=None,name="last_value_metric_combined", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.fn = fn
         # Custom losses
         self.custom_loss = self.add_weight(name="custom_loss", initializer="zeros")
         self.custom_caption_loss = self.add_weight(
