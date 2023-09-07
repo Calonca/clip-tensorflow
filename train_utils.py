@@ -42,7 +42,7 @@ def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
     )
 
     temperature = tf.math.exp(temperature)
-    text_logits = tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
+    text_logits = tf.matmul(text_embeds, image_embeds, transpose_b=True) / temperature
     image_logits = tf.transpose(text_logits)
 
     num_logits = image_logits.shape[0]
@@ -81,7 +81,7 @@ def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
     # text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
 
     logits = (
-        tf.matmul(text_embeds, image_embeds, transpose_b=True) * temperature
+        tf.matmul(text_embeds, image_embeds, transpose_b=True) / temperature
     )  # rows are text and columns are images
 
     img_sim = tf.matmul(image_embeds, image_embeds, transpose_b=True)
