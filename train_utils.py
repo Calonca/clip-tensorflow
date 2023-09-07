@@ -77,8 +77,8 @@ def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
 
 def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
     """Uses images and text similarities"""
-    # image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
-    # text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
+    image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
+    text_embeds = text_embeds / tf.norm(tensor=text_embeds, axis=-1, keepdims=True)
 
     logits = (
         tf.matmul(text_embeds, image_embeds, transpose_b=True) / temperature
