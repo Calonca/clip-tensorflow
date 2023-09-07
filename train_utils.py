@@ -72,9 +72,10 @@ def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
     return loss
 
 
+def custom_loss_with_temp(temp=1):
+    return lambda text_embeds, image_embeds, verbose : custom_loss(text_embeds, image_embeds, temp, verbose=False)
+
 """Returns the our loss function with a given temperature"""
-
-
 def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
     """Uses images and text similarities"""
     image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
