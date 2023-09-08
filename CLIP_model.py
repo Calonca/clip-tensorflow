@@ -312,19 +312,12 @@ class CLIP_fusion_with_custom_metric(tf.keras.Model):
 
     def predict_step(self, data):
 
-        if len(data) == 3:
-            self.reduce_input = True
-            imgs, caption_ids, caption_masks = data[0], data[1], data[2]
-
-            text_embeds, image_embeds = self(
-                [imgs, caption_ids, caption_masks, tf.zeros_like(self.input_shape[-1]),tf.zeros_like(self.input_shape[-1])], training=False
-            )  # Forward pass
-        else: 
-            imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
-
-            text_embeds, image_embeds = self(
-                [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
-            )  # Forward pass
+        # Unpack the data
+        imgs, caption_ids, caption_masks, concepts_ids, concepts_masks = data[0], data[1], data[2], data[3], data[4]
+        # Compute predictions
+        text_embeds, image_embeds = self(
+            [imgs, caption_ids, caption_masks, concepts_ids, concepts_masks], training=False
+        )  # Forward pass   
         
         image_embeds = image_embeds / tf.norm(
             tensor=image_embeds, ord="euclidean", axis=-1, keepdims=True
@@ -332,8 +325,6 @@ class CLIP_fusion_with_custom_metric(tf.keras.Model):
         text_embeds = text_embeds / tf.norm(
             tensor=text_embeds, ord="euclidean", axis=-1, keepdims=True
         )
-
-        self.reduce_input = False
 
         return text_embeds, image_embeds
 

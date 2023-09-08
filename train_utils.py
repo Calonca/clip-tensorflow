@@ -3,22 +3,25 @@ import tensorflow as tf
 import utils
 import CLIP_data_load
 import numpy as np
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from wandb.keras import WandbCallback
 
 
-checkpoint_fun = lambda filename: tf.keras.callbacks.ModelCheckpoint(filename, 
-                    monitor="val_loss", mode="min", 
-                    save_best_only=True, verbose=1)
+checkpoint_fun = lambda filename: tf.keras.callbacks.ModelCheckpoint(
+    filename, monitor="val_loss", mode="min", save_best_only=True, verbose=1
+)
 
-early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=False)
+early_stopping = tf.keras.callbacks.EarlyStopping(
+    monitor="val_loss", patience=5, restore_best_weights=False
+)
 
 wandb_callback_fun = lambda gen: WandbCallback(
-    monitor='loss',
+    monitor="loss",
     log_batch_frequency=10,
-    save_model = False,
+    save_model=False,
     validation_steps=len(gen),
 )
+
 
 ## Loss
 def tf_categorical_cross_entropy(y_true, logits):
@@ -28,8 +31,10 @@ def tf_categorical_cross_entropy(y_true, logits):
         )
     )
 
+
 def clip_loss_with_temp(temp):
-    return lambda txt,img,verbose=False: clip_loss(txt,img,temp,verbose)
+    return lambda txt, img, verbose=False: clip_loss(txt, img, temp, verbose)
+
 
 def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
     if temperature is None:
@@ -75,9 +80,14 @@ def clip_loss(text_embeds, image_embeds, temperature=None, verbose=False):
 
 
 def custom_loss_with_temp(temp=1):
-    return lambda text_embeds, image_embeds, verbose=False : custom_loss(text_embeds, image_embeds, temp, verbose)
+    return lambda text_embeds, image_embeds, verbose=False: custom_loss(
+        text_embeds, image_embeds, temp, verbose
+    )
+
 
 """Returns the our loss function with a given temperature"""
+
+
 def custom_loss(text_embeds, image_embeds, temperature, verbose=False):
     """Uses images and text similarities"""
     image_embeds = image_embeds / tf.norm(tensor=image_embeds, axis=-1, keepdims=True)
@@ -415,7 +425,7 @@ class MeanMetricCombinedLoss(tf.keras.metrics.Metric):
 
 
 class LastValueMetricCombinedLoss(tf.keras.metrics.Metric):
-    def __init__(self,fn=None,name="last_value_metric_combined", **kwargs):
+    def __init__(self, fn=None, name="last_value_metric_combined", **kwargs):
         super().__init__(name=name, **kwargs)
         self.fn = fn
         # Custom losses
@@ -492,7 +502,7 @@ def build_zero_shot_metric(
     labels = [preceding_caption + label for label in labels]
 
     zs_concepts = CLIP_data_load.construct_encoding(
-        labels, tokenizer, max_len_captions, return_tensors="tf"
+        labels, tokenizer, max_len_concepts, return_tensors="tf"
     )
     zs_concepts_as_caps = CLIP_data_load.construct_encoding(
         labels, tokenizer, max_len_captions, return_tensors="tf"
@@ -521,7 +531,6 @@ class ZeroShotSingleLabelCallBack(tf.keras.callbacks.Callback):
         self.precomputed_e_img = precomputed_e_img
 
     def on_epoch_end(self, epoch, metrics={}):
-
         label_e_txt = self.emb_lambda()
 
         # Skip embedding computation if embeddings previously computed
@@ -552,6 +561,33 @@ class ZeroShotSingleLabelCallBack(tf.keras.callbacks.Callback):
         # Multi class accuracy
         acc_score = accuracy_score(one_hot_labels, similarities)
 
-        # return e_txt.numpy(),e_img.numpy()
-        self.logger.log({"zero_shot_accuracy": acc_score})
-        metrics["zero_shot_accuracy"] = acc_score #
+        # test time
+        if self.precomputed_e_img is not None:
+
+            prec_score_micro = precision_score(
+                one_hot_labels, similarities, average="micro"
+            )
+            rec_score_micro = recall_score(one_hot_labels, similarities, average="micro")
+            f1_micro = f1_score(one_hot_labels, similarities, average="micro")
+            prec_score_macro = precision_score(
+                one_hot_labels, similarities, average="macro"
+            )
+            rec_score_macro = recall_score(one_hot_labels, similarities, average="macro")
+            f1_macro = f1_score(one_hot_labels, similarities, average="macro")
+
+            # return e_txt.numpy(),e_img.numpy()
+            self.logger.log(
+                {
+                    "num_classes": one_hot_labels.shape[1],
+                    "zero_shot_accuracy_test": acc_score,
+                    "zero_shot_precision_micro": prec_score_micro,
+                    "zero_shot_recall_micro": rec_score_micro,
+                    "zero_shot_f1_micro": f1_micro,
+                    "zero_shot_precision_macro": prec_score_macro,
+                    "zero_shot_recall_macro": rec_score_macro,
+                    "zero_shot_f1_macro": f1_macro,
+                }
+            )
+        else:
+            self.logger.log({"zero_shot_accuracy": acc_score})
+            metrics["zero_shot_accuracy"] = acc_score 
