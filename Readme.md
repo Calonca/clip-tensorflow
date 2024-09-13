@@ -1,8 +1,8 @@
 ## Implementation of Contrastive Language-Image Pre-Training (CLIP) in TensorFlow for Medical Imaging
 
-This project implements CLIP from OpenAI [^1] in TensorFlow using the ROCO (Radiology Objects in COntext) dataset [^2]. CLIP aligns image and text representations through contrastive learning, enabling zero-shot learning in the medical domain.
+This project implements CLIP from OpenAI [^1] in TensorFlow using the ROCO (Radiology Objects in COntext) dataset [^2]. CLIP aligns image and text representations through contrastive learning, enabling zero-shot learning.
 
-The ROCO dataset, containing radiology images and captions, was used to adapt the CLIP framework for medical applications.
+The ROCO dataset, containing radiology images and captions, was used to train the CLIP model specifically for medical applications.
 
 For more details, refer to the [Project Report](https://github.com/Calonca/clip-tensorflow/blob/main/CLIP_Tensorflow_report.pdf).
 
